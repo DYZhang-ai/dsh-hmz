@@ -10,7 +10,6 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const NS = 'hmz-flow'
-    const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
 
     const zh = {
       'menu.section': 'Flow',
@@ -57,13 +56,36 @@ window.__ModuleLoader__.load({
       'panel.protect': '写保护开启：flow 修改代码，leader 只读、沟通与调度',
       'panel.release': '解除保护',
       'panel.releaseConfirm': '这次启动的结果未知。只有在你确认 hmz 没有运行这个 flow 时才解除写保护。继续？',
-      'view.readonly': '只读视图：这里显示原生 hmz 界面，但写操作已禁用。请在下方 DSH 输入框与 leader 沟通（发送、回答、停止）。',
-      'view.bound': '本会话绑定的 run',
-      'view.unbound': '同目录正在运行的 run（不属于本会话，仅查看）',
       'view.label': 'Flow',
-      'view.loading': '正在连接 hmz…',
-      'view.reload': '重新连接',
-      'view.none': '当前目录没有 hmz 运行；显示 hmz 首页。',
+      'view.scope': '本页只显示这个 DSH 会话启动的 hmz 任务。',
+      'view.empty': '这个会话还没有 flow 任务。',
+      'view.emptySelected': '已选 flow：{flow}。向 leader 说明要做的事，它会为本会话启动任务。',
+      'view.emptyHint': '在输入框键入 / ，在 Flow 分组选择一个 flow。',
+      'view.runs': '本会话的任务',
+      'view.current': '当前',
+      'view.history': '正在查看历史任务；leader 的发送、回答和停止仍作用于当前任务{current}。',
+      'view.refresh': '刷新',
+      'view.loading': '读取中…',
+      'view.noEpic': 'hmz 还没有为这个任务写出 epic。',
+      'view.agents': 'AGENT → SESSION',
+      'view.noSessions': '还没有打开会话',
+      'view.pickSession': '选择一个会话查看输出。',
+      'view.noOutput': '这个会话还没有记录到输出。',
+      'view.older': '加载更早的 {n} 条',
+      'view.cut': '（已截断 {n} 字）',
+      'view.toolNoOutput': '（hmz 记录中无输出）',
+      'view.waiting': '等待你回答：{text}（请在下方输入框告诉 leader）',
+      'view.task': '任务',
+      'phase.starting': '启动中',
+      'phase.running': '运行中',
+      'phase.stopping': '停止中',
+      'phase.unknown': '结果未知',
+      'phase.ended': '已结束',
+      'phase.released': '已解除保护',
+      'cat.turn': '轮次',
+      'cat.llm': '思考',
+      'cat.message': '消息',
+      'cat.tool': '工具',
     }
     const en = {
       'menu.section': 'Flow',
@@ -110,13 +132,36 @@ window.__ModuleLoader__.load({
       'panel.protect': 'Write protection ON: the flow edits code; the leader reads, talks and steers',
       'panel.release': 'Release protection',
       'panel.releaseConfirm': 'The outcome of this start is unknown. Release write protection only if you have confirmed hmz is not running this flow. Continue?',
-      'view.readonly': 'Read-only view: native hmz is shown but writes are disabled. Talk to the leader in the DSH composer below (send, answer, stop).',
-      'view.bound': 'Run bound to this session',
-      'view.unbound': 'Run in this directory (not this session\'s; view only)',
       'view.label': 'Flow',
-      'view.loading': 'Connecting to hmz…',
-      'view.reload': 'Reconnect',
-      'view.none': 'No hmz run in this directory; showing the hmz home.',
+      'view.scope': 'This page shows only the hmz runs this DSH session started.',
+      'view.empty': 'This session has no flow runs yet.',
+      'view.emptySelected': 'Selected flow: {flow}. Tell the leader what to do and it starts a run for this session.',
+      'view.emptyHint': 'Type / in the composer and pick a flow in the Flow group.',
+      'view.runs': 'Runs of this session',
+      'view.current': 'current',
+      'view.history': 'Viewing an earlier run; the leader\'s send, answer and stop still act on the current run{current}.',
+      'view.refresh': 'Refresh',
+      'view.loading': 'Loading…',
+      'view.noEpic': 'hmz has not written an epic for this run yet.',
+      'view.agents': 'AGENT → SESSION',
+      'view.noSessions': 'no sessions opened yet',
+      'view.pickSession': 'Pick a session to read its output.',
+      'view.noOutput': 'Nothing recorded for this session yet.',
+      'view.older': 'Load {n} earlier',
+      'view.cut': '(cut, {n} more chars)',
+      'view.toolNoOutput': '(no output recorded by hmz)',
+      'view.waiting': 'Waiting for your answer: {text} (tell the leader in the composer below)',
+      'view.task': 'Task',
+      'phase.starting': 'starting',
+      'phase.running': 'running',
+      'phase.stopping': 'stopping',
+      'phase.unknown': 'outcome unknown',
+      'phase.ended': 'ended',
+      'phase.released': 'protection released',
+      'cat.turn': 'turn',
+      'cat.llm': 'thinking',
+      'cat.message': 'message',
+      'cat.tool': 'tool',
     }
 
     // ------------------------------------------------------------ Host RPC
@@ -216,6 +261,25 @@ window.__ModuleLoader__.load({
 .hmzf-roles li{padding:2px 0;color:var(--dsw-alias-label-secondary)}
 .hmzf-link{border:none;background:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;padding:0 4px}
 .hmzf-error{color:var(--dsw-alias-label-danger,#c33)}
+.hmzf-split{flex-direction:row;gap:0;overflow:hidden}
+.hmzf-nav{width:260px;flex:none;overflow:auto;padding:8px 10px;border-right:0.5px solid var(--dsw-alias-border-l2);font-size:13px}
+.hmzf-main{flex:1;min-width:0;overflow:auto;padding:10px 16px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary)}
+.hmzf-run,.hmzf-session,.hmzf-agent-head{display:block;width:100%;text-align:left;border:none;background:none;color:inherit;font:inherit;padding:4px 6px;border-radius:6px;cursor:pointer}
+.hmzf-run:hover,.hmzf-session:hover,.hmzf-agent-head:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.hmzf-sel{background:var(--dsw-alias-bg-module-platform);outline:0.5px solid var(--dsw-alias-border-l2)}
+.hmzf-session{padding-left:20px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.hmzf-indent{padding-left:20px}
+.hmzf-empty{margin:48px auto;max-width:520px;text-align:center;display:flex;flex-direction:column;gap:8px}
+.hmzf-empty-title{font-size:15px;color:var(--dsw-alias-label-primary)}
+.hmzf-pad{padding:16px}
+.hmzf-note{margin:0 0 8px;padding:6px 10px;border-radius:8px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:12px}
+.hmzf-runhead{display:flex;align-items:baseline;gap:4px;margin-bottom:8px}
+.hmzf-runhead .hmzf-link{margin-left:auto}
+.hmzf-task pre,.hmzf-act pre{white-space:pre-wrap;word-break:break-word;margin:4px 0 0;padding:6px 8px;border-radius:6px;background:var(--dsw-alias-bg-module-platform);font-family:var(--dsw-font-mono,monospace);font-size:12px;max-height:360px;overflow:auto}
+.hmzf-act{padding:4px 0;border-bottom:0.5px solid var(--dsw-alias-border-l2)}
+.hmzf-act summary{cursor:pointer}
+.hmzf-tag{display:inline-block;min-width:34px;padding:0 6px;border-radius:4px;font-size:11px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary)}
+.hmzf-act-error .hmzf-tag{color:var(--dsw-alias-label-danger,#c33)}
 .hmzf-sec{margin:10px 0 4px;font-size:11px;letter-spacing:.06em;color:var(--dsw-alias-label-secondary)}
 .hmzf-cap{display:block;font-size:11px;letter-spacing:.04em;color:var(--dsw-alias-label-tertiary)}
 .hmzf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:2px 0 4px}
@@ -228,10 +292,8 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
 .hmzf-save{height:28px;padding:0 14px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-module-platform,#fff);cursor:pointer;font:inherit}
 .hmzf-bound{padding:6px 8px;margin-bottom:6px;border-radius:8px;border:0.5px solid var(--dsw-alias-border-l2)}
 .hmzf-active{border-color:var(--dsw-alias-label-secondary)}
-.hmzf-readonly{padding:6px 10px;font-size:12px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);border-bottom:0.5px solid var(--dsw-alias-border-l2)}
 .hmzf-view{display:flex;flex-direction:column;height:100%;min-height:0;flex:1}
 .hmzf-bar{display:flex;align-items:center;gap:8px;padding:4px 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
-.hmzf-frame{flex:1;width:100%;min-height:480px;border:0;background:var(--dsw-alias-bg-module-platform)}
 `
     function Style() { return h('style', null, css) }
 
@@ -467,39 +529,205 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
       }
     }
     // ------------------------------------------------------------ Flow view
+    function fmt(text, vars) {
+      return String(text).replace(/\{(\w+)\}/g, (_, k) => (vars && vars[k] !== undefined ? String(vars[k]) : ''))
+    }
+    function phaseLabel(t, run, pending) {
+      const base = t(`phase.${run.phase}`) || run.phase
+      if (run.phase === 'ended') return `${base}${run.endedHow ? ` · ${run.endedHow}` : ''}`
+      if (run.phase === 'running' && pending && pending.length) return `${base} · ${pending.length} ?`
+      return base
+    }
+    const ACTIVE = new Set(['starting', 'running', 'stopping', 'unknown'])
+
+    /**
+     * One session's Flow page. Mounted per DSH session (keyed by sessionId), so a
+     * switch never shows the previous session's data. Within it, every request
+     * carries the selection it was made for and is dropped if the selection moved.
+     */
+    function SessionFlow({ t, sessionId }) {
+      const one = useSessionEntry(sessionId)
+      const [list, setList] = React.useState(null)
+      const [listError, setListError] = React.useState(null)
+      const [runId, setRunId] = React.useState(null)
+      const [tree, setTree] = React.useState(null)
+      const [treeError, setTreeError] = React.useState(null)
+      const [sessionKey, setSessionKey] = React.useState(null)
+      const [detail, setDetail] = React.useState(null)
+      const [detailError, setDetailError] = React.useState(null)
+      const [collapsed, setCollapsed] = React.useState({})
+      const want = React.useRef({ runId: null, sessionKey: null })
+      // In flight, per kind: the key of the request under way (null when none). A
+      // request for a new selection is never blocked by one for an old selection;
+      // only a duplicate for the same key is skipped, and stale answers are dropped.
+      const busy = React.useRef({ list: false, tree: null, detail: null })
+
+      const selectRun = (id) => {
+        want.current = { runId: id, sessionKey: null }
+        setRunId(id); setTree(null); setTreeError(null); setSessionKey(null); setDetail(null); setDetailError(null)
+      }
+      const selectSession = (key) => {
+        want.current = { runId: want.current.runId, sessionKey: key }
+        setSessionKey(key); setDetail(null); setDetailError(null)
+      }
+
+      const loadList = React.useCallback(async () => {
+        if (busy.current.list) return
+        busy.current.list = true
+        try {
+          const got = await rpc('runs', sessionId)
+          setList(got); setListError(null)
+          if (want.current.runId === null && got.runs.length) {
+            selectRun(got.currentRunId && got.runs.some((r) => r.runId === got.currentRunId) ? got.currentRunId : got.runs[0].runId)
+          }
+        } catch (error) { setListError(error.message) } finally { busy.current.list = false }
+      }, [sessionId])
+
+      const loadTree = React.useCallback(async () => {
+        const forRun = want.current.runId
+        if (!forRun || busy.current.tree === forRun) return
+        busy.current.tree = forRun
+        try {
+          const got = await rpc('runTree', sessionId, { runId: forRun })
+          if (want.current.runId !== forRun) return
+          setTree(got); setTreeError(null)
+          if (want.current.sessionKey === null) {
+            const keys = (got.agents || []).flatMap((a) => (a.sessions || []).map((s) => ({ key: s.key, at: s.at || '' })))
+            keys.sort((x, y) => (x.at < y.at ? 1 : -1))
+            if (keys.length) selectSession(keys[0].key)
+          }
+        } catch (error) {
+          if (want.current.runId === forRun) setTreeError(error.message)
+        } finally { if (busy.current.tree === forRun) busy.current.tree = null }
+      }, [sessionId])
+
+      const loadDetail = React.useCallback(async (before) => {
+        const forRun = want.current.runId
+        const forKey = want.current.sessionKey
+        const flight = `${forRun}\u0000${forKey}\u0000${before ?? ''}`
+        if (!forRun || !forKey || busy.current.detail === flight) return
+        busy.current.detail = flight
+        try {
+          const got = await rpc('runSession', sessionId, { runId: forRun, sessionKey: forKey, ...(before !== undefined ? { before } : {}) })
+          if (want.current.runId !== forRun || want.current.sessionKey !== forKey) return
+          setDetail((prev) => {
+            if (!prev || prev.session !== got.session) return got
+            if (before !== undefined) return { ...got, actions: [...got.actions, ...prev.actions], to: prev.to }
+            // A refresh of the newest page keeps older pages already loaded.
+            if (prev.from < got.from) {
+              return { ...got, from: prev.from, more: prev.more, actions: [...prev.actions.filter((a) => a.i < got.from), ...got.actions] }
+            }
+            return got
+          })
+          setDetailError(null)
+        } catch (error) {
+          if (want.current.runId === forRun && want.current.sessionKey === forKey) setDetailError(error.message)
+        } finally { if (busy.current.detail === flight) busy.current.detail = null }
+      }, [sessionId])
+
+      React.useEffect(() => {
+        void loadList()
+        const timer = setInterval(() => { void loadList() }, 4000)
+        return () => clearInterval(timer)
+      }, [loadList])
+      const selectedRun = list && runId ? list.runs.find((r) => r.runId === runId) : null
+      const live = !!selectedRun && ACTIVE.has(selectedRun.phase)
+      React.useEffect(() => {
+        if (!runId) return undefined
+        void loadTree()
+        if (!live) return undefined
+        const timer = setInterval(() => { void loadTree() }, 8000)
+        return () => clearInterval(timer)
+      }, [runId, live, loadTree])
+      React.useEffect(() => {
+        if (!runId || !sessionKey) return undefined
+        void loadDetail()
+        if (!live) return undefined
+        // Live runs: refresh the newest page; an expanded older history is kept.
+        const timer = setInterval(() => { void loadDetail() }, 6000)
+        return () => clearInterval(timer)
+      }, [runId, sessionKey, live, loadDetail])
+
+      const flow = one.selection && one.selection.flow
+      if (list === null) {
+        return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view' }, h(Style),
+          h('div', { className: 'hmzf-pad hmzf-desc' }, listError ? h('span', { className: 'hmzf-error' }, listError) : t('view.loading')))
+      }
+      if (!list.runs.length) {
+        return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view', 'data-hmz-state': 'empty' }, h(Style),
+          h('div', { className: 'hmzf-empty' },
+            h('div', { className: 'hmzf-empty-title' }, t('view.empty')),
+            h('div', { className: 'hmzf-desc' }, flow ? fmt(t('view.emptySelected'), { flow }) : t('view.emptyHint')),
+            h('div', { className: 'hmzf-desc' }, t('view.scope'))))
+      }
+      const current = list.runs.find((r) => r.current)
+      const pending = list.pending || []
+      return h('div', { className: 'hmzf-view hmzf-split', 'data-hmz-flow': 'view', 'data-hmz-state': 'runs' }, h(Style),
+        h('aside', { className: 'hmzf-nav' },
+          h('div', { className: 'hmzf-sec' }, t('view.runs')),
+          list.runs.map((r) => h('button', {
+            key: r.runId, type: 'button', className: `hmzf-run${r.runId === runId ? ' hmzf-sel' : ''}`,
+            'data-hmz-run': r.runId, 'data-hmz-phase': r.phase, onClick: () => selectRun(r.runId),
+          },
+          h('div', null, `${r.flow} · #${r.run ?? '?'}${r.current ? ` · ${t('view.current')}` : ''}`),
+          h('div', { className: 'hmzf-desc' }, `${phaseLabel(t, r, r.current ? pending : [])}${r.startedAt || r.requestedAt ? ` · ${(r.startedAt || r.requestedAt).slice(11, 19)}` : ''}`))),
+          tree && tree.agents ? h('div', { 'data-hmz-flow': 'tree' },
+            h('div', { className: 'hmzf-sec' }, t('view.agents')),
+            tree.agents.map((a) => {
+              const open = !collapsed[a.agent]
+              return h('div', { key: a.agent, className: 'hmzf-agent', 'data-hmz-agent': a.agent },
+                h('button', { type: 'button', className: 'hmzf-agent-head', onClick: () => setCollapsed((c) => ({ ...c, [a.agent]: open })) },
+                  `${open ? '▾' : '▸'} ${a.role ? `${a.role} · ` : ''}${a.agent}`),
+                open ? (a.sessions.length ? a.sessions.map((sn, i) => h('button', {
+                  key: sn.key, type: 'button', className: `hmzf-session${sn.key === sessionKey ? ' hmzf-sel' : ''}`,
+                  'data-hmz-session': sn.key, onClick: () => selectSession(sn.key),
+                }, `${a.agent}/${i + 1} · ${sn.backend}${sn.at ? ` · ${sn.at.slice(11, 19)}` : ''}`))
+                  : h('div', { className: 'hmzf-desc hmzf-indent' }, t('view.noSessions'))) : null)
+            })) : null,
+          treeError ? h('div', { className: 'hmzf-error' }, treeError) : null),
+        h('section', { className: 'hmzf-main' },
+          selectedRun && current && selectedRun.runId !== current.runId
+            ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'history-note' }, fmt(t('view.history'), { current: ` #${current.run ?? '?'}` })) : null,
+          selectedRun && selectedRun.current && pending.length
+            ? pending.map((q) => h('div', { key: q.question, className: 'hmzf-note', 'data-hmz-flow': 'pending' }, fmt(t('view.waiting'), { text: q.text }))) : null,
+          selectedRun ? h('div', { className: 'hmzf-runhead', 'data-hmz-flow': 'run-head' },
+            h('strong', null, `${selectedRun.flow} · #${selectedRun.run ?? '?'}`), ' · ',
+            h('span', { 'data-hmz-flow': 'phase' }, phaseLabel(t, selectedRun, selectedRun.current ? pending : [])),
+            selectedRun.epicName ? h('span', { className: 'hmzf-desc' }, ` · ${selectedRun.epicName}`) : null,
+            h('button', { type: 'button', className: 'hmzf-link', onClick: () => { void loadTree(); void loadDetail() } }, t('view.refresh'))) : null,
+          tree && tree.epic ? h('details', { className: 'hmzf-task' }, h('summary', null, t('view.task')), h('pre', null, tree.epic.task)) : null,
+          tree && tree.pendingEpic ? h('div', { className: 'hmzf-desc' }, t('view.noEpic')) : null,
+          !sessionKey ? (tree && !tree.pendingEpic ? h('div', { className: 'hmzf-desc' }, t('view.pickSession')) : null)
+            : h('div', { 'data-hmz-flow': 'detail', 'data-hmz-detail-for': `${runId}|${sessionKey}` },
+              detailError ? h('div', { className: 'hmzf-error' }, detailError) : null,
+              !detail ? h('div', { className: 'hmzf-desc' }, t('view.loading'))
+                : !detail.actions.length ? h('div', { className: 'hmzf-desc' }, t('view.noOutput'))
+                  : h(React.Fragment, null,
+                    detail.more ? h('button', { type: 'button', className: 'hmzf-link', onClick: () => { void loadDetail(detail.from) } }, fmt(t('view.older'), { n: detail.from })) : null,
+                    detail.actions.map((a) => h(ActionRow, { key: a.i, a, t })))),
+        ))
+    }
+
+    function ActionRow({ a, t }) {
+      const cut = (n) => (n ? ` ${fmt(t('view.cut'), { n })}` : '')
+      const label = t(`cat.${a.category}`) || a.category
+      const open = a.category === 'message'
+      return h('div', { className: `hmzf-act hmzf-${a.category}${a.error ? ' hmzf-act-error' : ''}`, 'data-hmz-action': a.category },
+        h('details', { open },
+          h('summary', null, h('span', { className: 'hmzf-tag' }, label), ' ', a.title || '', a.at ? h('span', { className: 'hmzf-desc' }, ` ${String(a.at).slice(11, 19)}`) : null),
+          a.text ? h('pre', null, `${a.text}${cut(a.textCut)}`) : null,
+          a.category === 'tool' ? h(React.Fragment, null,
+            a.input ? h('pre', { className: 'hmzf-in' }, `${a.input}${cut(a.inputCut)}`) : null,
+            h('pre', { className: 'hmzf-out' }, a.output ? `${a.output}${cut(a.outputCut)}` : t('view.toolNoOutput'))) : null))
+    }
+
     function makeView(t) {
       return function HmzFlowView(props) {
-        const sessionId = props.sessionId
-        const [embed, setEmbed] = React.useState(null)
-        const [problem, setProblem] = React.useState(null)
-        const [attempt, setAttempt] = React.useState(0)
-        React.useEffect(() => {
-          if (!sessionId) return undefined
-          let live = true
-          setEmbed(null)
-          setProblem(null)
-          rpc('embed', sessionId).then((e) => { if (live) setEmbed(e) }, (e) => { if (live) setProblem(e.message) })
-          return () => { live = false }
-        }, [sessionId, attempt])
-        const host = LOOPBACK.has(location.hostname) ? location.hostname : '127.0.0.1'
-        const src = embed ? `http://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${embed.port}${embed.path}` : null
-        let note = ''
-        if (embed) {
-          const b = embed.binding
-          if (embed.target === 'bound' && b) note = `${t('view.bound')}: #${b.run ?? '?'} · ${b.flow || ''} · ${b.phase} · ${b.epicName}`
-          else if (embed.target === 'unbound-running' && embed.status) note = `${t('view.unbound')}: #${embed.status.run} · ${embed.status.flow} · ${embed.status.epicName}`
-          else note = t('view.none')
-        }
-        return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view' },
-          h(Style),
-          embed && embed.readOnly ? h('div', { className: 'hmzf-readonly', role: 'note', 'data-hmz-flow': 'readonly' }, t('view.readonly')) : null,
-          h('div', { className: 'hmzf-bar' },
-            h('span', { style: { flex: 1 }, 'data-hmz-flow': 'view-note' }, problem ? h('span', { className: 'hmzf-error' }, problem) : (embed ? note : t('view.loading'))),
-            h('button', { type: 'button', className: 'hmzf-link', onClick: () => setAttempt((n) => n + 1) }, t('view.reload'))),
-          src ? h('iframe', { key: src, className: 'hmzf-frame', src, title: 'hmz', 'data-hmz-flow': 'frame', referrerPolicy: 'no-referrer' }) : null,
-        )
+        if (!props.sessionId) return null
+        return h(SessionFlow, { key: props.sessionId, t, sessionId: props.sessionId })
       }
     }
+
     // ------------------------------------------------ '/' menu: Flow group
     function makeSource(ctx, t) {
       const cache = new Map() // sessionId -> { at, flows }

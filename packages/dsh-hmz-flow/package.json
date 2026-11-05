@@ -2,7 +2,7 @@
   "name": "@dsh-hmz/flow",
   "version": "0.1.0",
   "private": true,
-  "description": "Use hmz flows from DSH: flow menu, flow options, embedded hmz Flow view, read-only leader tools.",
+  "description": "Run hmz flows from DSH: flow menu and options, leader tools to start, steer, answer and stop a run, write protection while it runs, and a per-session Flow page drawn from the hmz SDK.",
   "type": "module",
   "exports": {
     ".": "./index.js",

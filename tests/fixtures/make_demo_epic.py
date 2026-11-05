@@ -1,6 +1,6 @@
 """Test fixture: run one tiny real `chat` flow in an isolated hmz home and stop it.
 
-Not part of the plugin. Used only so the preview has a real epic to embed and a
+Not part of the plugin. Used only so the preview has a real epic to read and a
 real run snapshot (roles -> agents) to read. Usage (hmz installation python):
 
     HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... <hmz-python> -I make_demo_epic.py <workspace> [agent-spec] [hold-seconds]

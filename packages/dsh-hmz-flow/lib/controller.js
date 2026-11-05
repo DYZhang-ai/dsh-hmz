@@ -320,6 +320,9 @@ export class FlowController {
     }
     if (!binding.epic) return { binding, observation: { verdict: 'unverified', why: 'the bound run has no epic yet' } }
     const observation = await adapter.request('observe', { workspace: binding.workspace, expect: this.expectOf(binding) })
+    if (!this.observations) this.observations = new Map()
+    this.observations.set(sessionId, { runId: binding.requestId, at: Date.now(), verdict: observation.verdict, why: observation.why,
+      pending: (observation.view?.pending ?? []).filter((q) => q.run === binding.run), workingSessions: observation.view?.workingSessions ?? [] })
     if (observation.verdict === 'ended') {
       const ended = { ...binding, phase: 'ended', endedHow: observation.how, endedAt: new Date().toISOString() }
       this.saveBinding(sessionId, ended)
@@ -356,14 +359,32 @@ export class FlowController {
    * back, until the leader actually received it.
    */
   deliverEnded(sessionId) {
-    const binding = this.deps.store.binding(sessionId)
-    if (!binding || binding.phase !== 'ended' || binding.notified?.ended) return false
-    const delivered = this.deps.notify(sessionId,
-      `[hmz flow notice — not a user message] hmz run #${binding.run} (${binding.flow}, epic ${binding.epicName}) has ended: ${binding.endedHow}. Write protection for this session is released. Tell the user briefly; do not start another flow unless they ask.`,
-      `hmz run #${binding.run} ended: ${binding.endedHow}`)
-    if (!delivered) return false
-    try { this.saveBinding(sessionId, { ...binding, notified: { ...(binding.notified ?? {}), ended: true } }) } catch {}
-    return true
+    let any = false
+    // Every ended run of the session's history whose notice has not reached the
+    // leader yet -- including one a later start has since replaced as current.
+    const store = this.deps.store
+    const pending = (typeof store.runsOf === 'function' ? store.runsOf(sessionId) : [])
+      .filter((run) => run.phase === 'ended' && !run.notified?.ended)
+    const current = store.binding(sessionId)
+    if (current && current.phase === 'ended' && !current.notified?.ended && !pending.some((r) => r.runId === current.requestId)) pending.push(current)
+    for (const run of pending) {
+      const delivered = this.deps.notify(sessionId,
+        `[hmz flow notice — not a user message] hmz run #${run.run} (${run.flow}, epic ${run.epicName}) has ended: ${run.endedHow}. ${current && current.requestId !== run.requestId ? 'It was an earlier run of this session.' : 'Write protection for this session is released.'} Tell the user briefly; do not start another flow unless they ask.`,
+        `hmz run #${run.run} ended: ${run.endedHow}`)
+      if (!delivered) return any
+      any = true
+      const notified = { ...(run.notified ?? {}), ended: true }
+      try {
+        if (current && run.requestId === current.requestId) this.saveBinding(sessionId, { ...store.binding(sessionId), notified })
+        else store.updateRun(sessionId, run.runId, { notified })
+      } catch {}
+    }
+    return any
+  }
+
+  /** The last observation of a session's current run (memory only; for the Flow page). */
+  lastObserved(sessionId) {
+    return this.observations?.get(sessionId)
   }
 
   /** Observe every protected session once; overlapping ticks are skipped. */
@@ -371,9 +392,11 @@ export class FlowController {
     if (this.ticking) return
     this.ticking = true
     try {
-      for (const id of this.deps.store.boundSessions()) {
-        const binding = this.deps.store.binding(id)
-        if (binding?.phase === 'ended' && !binding.notified?.ended) { this.deliverEnded(id); continue }
+      const store = this.deps.store
+      const ids = new Set([...store.boundSessions(), ...(typeof store.sessionsWithRuns === 'function' ? store.sessionsWithRuns() : [])])
+      for (const id of ids) {
+        this.deliverEnded(id)
+        const binding = store.binding(id)
         if (!ACTIVE.has(binding?.phase)) continue
         try { await this.observe(id) } catch (error) { this.deps.logger?.warn?.('hmz-flow observe %s failed: %s', id, error.message) }
       }

@@ -1,59 +1,91 @@
 # DSH × hmz Flow 集成（外部插件 + 外置适配层）
 
-本仓库提供一个 DSH 外部插件包 `@dsh-hmz/flow`（`packages/dsh-hmz-flow`），以及隔离预览脚本和测试。
-**hmz 源码、已安装 DSH 本体均零修改**；集成只用 DSH 公开插件接口和 hmz 公开 SDK / 原生 Web。
+外部 DSH 插件 `@dsh-hmz/flow`（`packages/dsh-hmz-flow`），让 DSH 通过 hmz 的公开 SDK 运行 hmz flow。
+**hmz 源码、已安装 DSH 本体均零修改**；只用 DSH 公开插件接口（tools / guard / connection.fetch / slots / userQuestions / agent.followup）和 hmz 公开 SDK（`hmz.sdk.Hmz`、`Daemons`、`Link`）。
 
-> 当前为第一个纵向里程碑：菜单/选项/Flow 视图/只读查询已在真实 DSH 中接通；
-> **flow 的启动、定向发送、回答问题、停止，以及写入保护尚未实现**（见“已知限制”）。
+## 产品行为
 
-## 组成
+- **DSH 入口 Agent 是 leader / 秘书。** 普通消息照常发给它；它判断用户意图，再调用 flow 工具。hmz 负责 flow 内部编排，leader 不充当 hmz 的角色。
+- **选择 flow：** 在输入框键入 `/`，在“添加 / 指令”之后的 **Flow** 分组里选一个 flow。输入框底部出现“**flow选项**”，点开后的面板由 hmz 的 flow 声明驱动：
+  - 每个角色的 CLI / 账号 / 模型（可自填，带候选列表）/ effort；
+  - 预算（费用、时间、输出 token，以及各自是否 graceful）、环境、params、profile 开关；
+  - “附带前文”开关，默认开启。
+  选项保存后即为权威；被清空的字段不会从 hmz 的记忆里回填。选中状态一直保留，直到取消 flow 模式。
+- **leader 工具：**
 
-| 部分 | 文件 | 作用 |
-|---|---|---|
-| Host 插件 | `packages/dsh-hmz-flow/index.js` | 注册 DSH 鉴权的 `POST /api/hmz-flow/rpc` 路由、只读 leader 工具 `hmz_flow_list`/`hmz_flow_status`、所选 flow 的 leader 动态上下文；启动嵌入代理 |
-| Client 插件 | `packages/dsh-hmz-flow/client.js` | `/` 菜单中的 **Flow** 分组；输入框底部“**flow选项**”按钮；输入框上方 Flow 选项面板（附带前文开关等）；与“对话/轨迹”同级的 **Flow** 视图（iframe 原生 hmz） |
-| Python 适配器 | `packages/dsh-hmz-flow/adapter/hmz_adapter.py` | stdio JSON 行协议，经 hmz 公开 SDK 提供 `ping/flows/flow/status`，只读；不启动 daemon host、不发控制请求 |
-| 嵌入代理 | `packages/dsh-hmz-flow/lib/proxy.js` | 独立 loopback 端口反代 `hmz web`；见下文安全模型 |
-| 插件状态 | `packages/dsh-hmz-flow/lib/state.js` | 插件自己的 `state.json`（0600，原子写）：每个 DSH 会话的 flow 选择与附带前文开关 |
+  | 工具 | 作用 |
+  |---|---|
+  | `hmz_flow_list` | 列出可用 flow（只读） |
+  | `hmz_flow_status` | 查询进度（只读） |
+  | `hmz_flow_start` | 用户明确要求执行时启动，不额外确认；问进度只查询 |
+  | `hmz_flow_send` | 按角色或 Agent 投递；绝不发空目标 |
+  | `hmz_flow_answer` | 用 DSH 问答卡向真实用户提问，只转交用户自己的回答 |
+  | `hmz_flow_stop` | 停止当前 run |
 
-## 隔离预览（不影响现有 tmux `dsh` / `hmz-web` 与 `~/.dsh`、`~/.hmz`）
+- **前文快照：** 只包含本会话中用户输入和助手可见文本，不含系统提示、注入上下文、工具调用和输出、思考过程。从最新消息往前取，单条最多 2000 字、总计最多 12000 字、最多 40 条，截断处会标注。
+- **Flow 页（与“对话 / 轨迹”同级）只显示当前 DSH 会话的任务：**
+  - 新会话（比如只发了 hello）显示空白 / 准备状态，不查询 hmz，也不自动显示或接管同目录里其它会话的 epic。
+  - 启动后，列出本会话的 run（最新的是当前任务），选中的 run 展示 **Epic → Agent（角色）→ Session** 树和所选 Session 的输出（轮次、思考、消息、工具），可折叠，分页加载更早的内容。
+  - 查看历史 run 不会改变 leader 的控制对象：发送、回答、停止始终作用于当前 run，页面上有提示。
+- **任务归属以 DSH 会话 id 为准，不按工作目录判断。**
+  - 一个会话可以顺序跑多个 run，历史只追加不覆盖。
+  - 同一目录一次只能跑一个 flow；目录被其它任务占用时，启动会被拒绝并说明原因，不会带出那个任务的内容。
+  - 不同目录可以并行。
+- **生命周期：** hmz 在独立进程中持有 run。关闭页面或重启 DSH 都不会停止它，重新打开会话后恢复同一个 run。取消 leader 的回复不会停止 flow，停止 flow 需要显式调用 `hmz_flow_stop`。
+
+## 会话范围限定（Flow 页的数据边界）
+
+- Client 只发送 `sessionId` 和不透明的 `runId`（以及要查看的 Session key）。
+- Host（`lib/runview.js`）只在**该会话自己的 run 记录**里解析出受信的 epic：
+  - 别的会话的 runId、格式不合法的 id、该 run 没有打开过的 Session key，都会在调用适配器之前被拒绝（HTTP 403）；
+  - 没有 run 的会话直接得到空列表，不调用任何 hmz 接口。
+- 适配器（`epic_tree` / `epic_session`）再做一层检查：epic 必须是该工作目录自己的 epic 目录（`Hmz(workspace).epics.under()` 下的直接子目录，可以用名字或绝对路径指定，拒绝路径穿越和符号链接越界），Session key 使用 SDK 的复合键 `<backend>:<id>`。
+- 读取方式：
+  - 树来自 `Epics.read / sessions`；
+  - 输出来自 `Epics.transcripts`：按 epic 缓存，以 epic 内文件签名加 15 秒 TTL 判断是否重读（Session 日志可能存放在 epic 之外），同一 epic 不会并发读取；
+  - 每页最多 60 条动作，单个字段最多 4000 字。
+- Client 按会话挂载视图（以 `sessionId` 为 key）。每个请求都绑定发起时的 `runId|sessionKey`，迟到的响应直接丢弃；新的选择不会被旧请求的“进行中”状态挡住。
+- **这是 UX 和任务归属上的隔离，不是多租户安全隔离。** 浏览器用户就是这台机器上 hmz 的同一个 owner，可以直接用 hmz CLI / web 查看所有 epic。
+- 不需要 hmz web 服务，不使用 iframe。
+
+## 写保护与控制的边界
+
+- **保护范围：** 本会话的 run 处于 starting / running / stopping / unknown 时，本会话及其子代理只能调用白名单里的读取 / 沟通 / 控制工具（`lib/policy.js`），由 `ctx.tools.guard` 在真实 dispatch 时拒绝其它调用。
+  - 由模型直接调用的 `run_code` 会被拒绝。
+  - 选中 flow 之后，leader 改为原生工具呈现（`presentAs('native')`），从而在启动之前就保证启动和控制工具可以直接调用。
+  - 从 `run_code` 内部调用的启动会被拒绝。
+- **启动前检查：** 先挡住新的写入，再检查本会话树上仍在运行的子代理、后台作业和执行中的工具；只要有一项还在运行就拒绝启动，绝不终止别人的进程。
+- **状态记录：**
+  - 启动意图先持久化再发出请求。
+  - 启动结果未知时进入 `unknown`，不重发，只按 requestId 只读对账。
+  - hmz 已接受但本地记录写盘失败时，如实报告“已接受但未记录”，保护保持开启。
+  - stop 被接受不等于已经结束：要等 host 不再持有该 run、并且 epic 记录显示不在运行，才算结束并解除保护。
+- **控制目标：** 每个动作都携带精确的 run 身份（host pid、host 启动时间、run 号、epic）。问答时绑定展示问题那一刻的 run，run 已被替换就拒绝发送回答。
+
+**限制（如实说明）：**
+- 现有 hmz SDK 没有原子的 expected-run 前置条件。适配器在同一个 link 上先读后写来缩小竞态窗口，但**不能保证与独立的原生 hmz 客户端（hmz web / CLI）并发时不出竞态**。
+- 保护只覆盖本 DSH 会话及其子代理，不约束外部编辑器、其它 DSH 会话或原生 hmz 客户端。
+
+## hmz 兼容性说明
+
+- 当前 hmz 的“无账号 dsh”凭据读取器只认识旧版平铺 YAML，会把新版 DSH `.credentials.yaml`（version / records / refs）报成 ValueError。所以请使用**显式 hmz 账号**（例如 `dsh@preview-deepseek/deepseek-flash`），账号通过 hmz 公开的 accounts 接口存放在 hmz home 中。
+- hmz 缓存的静态模型列表可能落后于 DSH 实际可用的模型（例如列出 `deepseek-v4-flash`，而实际 ID 是 `deepseek-flash`）。所以选项面板的模型栏可以自由输入，列表只作候选。
+- hmz 的 trace 可能不保存某些后端的工具输出，此时 Flow 页显示“hmz 记录中无输出”。
+
+## 隔离预览
 
 ```bash
-scripts/preview.sh start     # 启动隔离 hmz web + 隔离 DSH（独立 tmux socket: dsh-hmz-preview）
-scripts/preview.sh status
-scripts/preview.sh stop      # 只停预览会话；flow 所在 hmz host 进程按设计继续存活
+# 默认：.preview/，tmux socket dsh-hmz-preview（端口随机，或用 DSH_PORT 指定）
+scripts/preview.sh start | status | stop
+# 第二套并行预览：独立 DSH home、状态、tmux socket 和端口；复用第一套的 hmz 账号 home
+PREVIEW_DIR=$PWD/.preview-test PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 \
+  PREVIEW_HMZ_HOME=$PWD/.preview/hmz-home PREVIEW_CREDENTIALS_FROM=$PWD/.preview/dsh-home \
+  scripts/preview.sh start
 ```
 
-可用环境变量覆盖：`DSH_BIN`（已安装 dsh 启动器）、`HMZ_BIN`（已安装 hmz 启动器，旁边的 `venv/bin/python` 用于适配器）、
-`PREVIEW_DIR`（默认 `.preview/`）、`DSH_PORT`（默认随机）。
-
-脚本做的事：
-- 在 `$PREVIEW_DIR/dsh-home` 建独立 `DSH_HOME` 与 profile `hmzflow`（bundles = dsh-base + dsh-web-app + `@dsh-hmz/flow`），
-  `node_modules/@dsh-hmz/flow` 软链到本仓库包；机器相关配置只写入该 profile 的 `cordis.patch.yml`。
-- `hmz web` 使用独立 `HUMANIZE_HOME` 与 `TMPDIR`（因而是独立的 hmz daemon socket）。其带 key 的地址只写入 `$PREVIEW_DIR/private/hmz-web-url`（0600），不进 git、不进浏览器。
-- DSH 访问地址（含一次性启动 token）写在 `$PREVIEW_DIR/private/dsh-url`。用浏览器打开它，选择工作区 `$PREVIEW_DIR/demo`。
-
-## 使用
-
-1. 在输入框键入 `/`（或点 `+`），菜单中“添加”“指令”之后出现 **Flow** 分组，列出当前工作目录 hmz 可用 flow。
-2. 选中某个 flow：`/` 记号被消费（不会作为消息发送），输入框底部出现“**flow选项 · <flow>**”，上方展开 Flow 选项面板。
-   - 面板可切换 flow、切换“**附带前文**”（默认 ON，可关），选择即时持久化（刷新/重启 DSH 后仍在）。
-   - 面板只读显示 hmz 声明的角色与可用 CLI；角色 CLI/账号/模型/effort、预算编辑**下一轮实现**。
-   - 选中状态持续，直到在面板点“取消 flow 模式”或 `/` 菜单选“取消 flow 模式”。
-3. 普通消息照常发给 DSH 入口 Agent（leader）。选中 flow 后，leader 通过动态上下文得知所选 flow，并可调用
-   `hmz_flow_list`、`hmz_flow_status`（真实 hmz 查询）。询问进度只会查询。
-4. 顶部“对话 / 轨迹 / **Flow**”：Flow 视图 iframe 嵌入原生 hmz Web（Epic→Agent→Session）。若当前目录有运行中的 run，自动深链到其 epic；
-   否则显示 hmz 首页（不会把同目录的历史/他人 epic 自动当作本会话任务）。
-
-## 嵌入代理安全模型
-
-- 只监听 `127.0.0.1`；`Host` 必须是 loopback 名 + 代理端口（防 DNS rebinding），`Sec-Fetch-Site: cross-site` 拒绝。
-- 浏览器进入代理只能凭 **一次性、60 秒有效** 的 ticket；ticket 只由 DSH Host 在 **DSH 已鉴权（owner）** 的 RPC 中签发。
-  兑换后获得代理自身的 `HttpOnly; SameSite=Strict` 会话 cookie。无会话的任何请求均 401，且不会转发到 hmz。
-- 代理在服务端用 hmz 的 key 登录并持有 hmz cookie；**hmz key 与 hmz cookie 都不下发给浏览器**，hmz 的 `Set-Cookie` 不透传。
-- 只改两处响应头：去掉 `X-Frame-Options: DENY`；CSP 仅把 `frame-ancestors` 改为 DSH 页面 origin。其余 CSP 不变。
-- 默认 **只读**：所有非 GET/HEAD 请求被拒（403），嵌入的 hmz 页面不能绕过 DSH leader 启动/发送/停止。可用插件配置 `embedReadOnly: false` 放开（此时写请求还须 `Origin` 为代理自身 origin）。
-- hmz 自身的 key/cookie/同源检查仍然生效（代理只把自身 origin 改写为上游 origin）。
+- 不会动 `~/.dsh`、`~/.hmz`、全局 hmz daemon，也不会动原有的 tmux `dsh` / `hmz-web`。
+- 带启动 token 的地址只写在 `$PREVIEW_DIR/private/dsh-url`（0600），不会打印出来。
+- 凭据只做静默复制，并设为 0600。
 
 ## 插件配置（profile 的 `cordis.patch.yml`）
 
@@ -61,39 +93,30 @@ scripts/preview.sh stop      # 只停预览会话；flow 所在 hmz host 进程�
 - id: dsh-hmz-flow
   name: '@dsh-hmz/flow'
   config:
-    python: /path/to/hmz-install/venv/bin/python   # 或 hmzBin: /path/to/hmz-install/bin/hmz
-    hmzWebUrlFile: /private/file/with/hmz-web-address   # `hmz web` 打印的带 key 地址所在文件（0600）
-    stateDir: /path/to/plugin-state                     # 可选；默认 $DSH_PROFILE_DIR/hmz-flow-state
-    hmzEnv: { HUMANIZE_HOME: ..., TMPDIR: ... }         # 可选；适配器环境（隔离用）
-    embedReadOnly: true                                 # 默认 true
-    frameAncestors: []                                  # 可选；额外允许嵌入的 DSH origin
+    python: /path/to/hmz-install/venv/bin/python     # 或 hmzBin: /path/to/hmz-install/bin/hmz
+    stateDir: /path/to/plugin-state                   # 可选；默认 $DSH_PROFILE_DIR/hmz-flow-state
+    hmzEnv: { HUMANIZE_HOME: ..., TMPDIR: ..., HUMANIZE_DSH_BIN: ... }   # 可选
+    monitorMs: 4000                                   # 可选；运行中任务的观测间隔
 ```
 
-在正式 profile 中安装：在 DSH 中用 `plugin_manager` 的 `install_bundle`，`target` 为本包绝对路径；再在该 profile 的补丁层写上面的 config。
-（本轮只在隔离 profile 中验证过手工软链方式。）
+插件状态是 `stateDir/state.json`（v3，0600，先写临时文件再原子替换；会自动从 v1/v2 迁移），内容包括每个会话的选择、选项、run 历史和当前 run。
 
 ## 测试
 
 ```bash
-cd packages/dsh-hmz-flow && npm test                      # 19 个 Node 行为测试（代理鉴权/只读/ticket、状态持久化、适配器 unknown 语义）
-# 真实 hmz 适配器冒烟（hmz 安装的 python，隔离 home）
-HUMANIZE_HOME=.preview/hmz-home TMPDIR=.preview/tmp <hmz-python> -I tests/e2e/adapter_smoke.py \
-  packages/dsh-hmz-flow/adapter/hmz_adapter.py $PWD/.preview/demo [demo-epic]
-# 真实 DSH 预览的 HTTP 探针
-tests/e2e/probe_live.sh <dsh-port> <proxy-port>
-# 真实 DSH 预览的浏览器端到端（Playwright）
-cd tests/e2e && <python-with-playwright> verify_ui.py ../../.preview/private/dsh-url ../../.preview/shots \
-  $PWD/../../.preview/demo <demo-epic>
+cd packages/dsh-hmz-flow && npm test        # Node 行为测试：状态 / 迁移 / 范围限定 / 路由 / 控制器 / 策略 / 选项 / 消息 / 适配器客户端
+PY="<hmz-install>/venv/bin/python"
+$PY -I tests/adapter_start_unit.py adapter/hmz_adapter.py   # 启动绑定故障注入
+$PY -I tests/adapter_epic_unit.py  adapter/hmz_adapter.py   # epic 名解析 / 越界 / 复合键 / 缓存 TTL
+# 真实 SDK 只读读取已有 epic（不启动任何东西）
+HUMANIZE_HOME=... TMPDIR=<私有 tmp> $PY -I tests/e2e/adapter_epic_read.py <adapter.py> <workspace> <epic名或路径> <另一目录的epic> '<names-json>'
+# 真实 SDK 动作（会启动两个极小的 DeepSeek chat run；拒绝 Claude）
+HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... $PY -I tests/e2e/adapter_actions.py <adapter.py> <测试目录>
+# 浏览器（Playwright），在隔离预览上执行
+tests/e2e/view_race.py <preview-dir>          # 真实 client.js + 模拟 RPC：切换 run / Session 时的迟到响应
+tests/e2e/flow_rpc_real.py <preview-dir>      # 真实 Host + 适配器 + SDK：本会话读取，跨会话 403
+tests/e2e/verify_flow.py <preview-dir> <shots> rlar|chat     # 真实 leader + DeepSeek flow
+tests/e2e/verify_sessions.py <preview-dir> <shots>           # 会话隔离、历史、重启（会启动真实 DeepSeek run）
 ```
 
-`tests/fixtures/make_demo_epic.py` 是测试夹具（不属于插件）：在隔离 hmz home 中用 SDK 跑一个极小的 `chat` flow 再停止，产生真实 epic。
-
-## 已知限制 / 未完成
-
-- 未实现：`hmz_flow_start`（含前文快照与长度策略）、按角色定向发送、转交 hmz 人类问题给真实用户、停止 flow、关键事件通知。
-- 未实现：flow 执行期间对 leader 的写入保护（tools.guard/restrict、PTC/子任务/后台作业检查）。在此之前 leader 的写工具不受本插件约束。
-- 现有 hmz SDK 的 `say/answer/stop` 没有 expected-run 原子条件；后续即使实现，也只能做“读后写”检查，不能宣称无竞态。
-- 选项面板中角色 CLI/账号/模型/effort 与预算尚为只读显示。
-- Flow 视图的深链仅针对“当前运行中”的 run；本会话与 epic 的显式绑定（持久 run 引用）尚未实现。
-- 嵌入为只读；需要在 hmz 原生界面操作时，请直接打开 hmz web。
-- Client 插件为手写 JS，样式只依赖 `--dsw-alias-*` 主题 token；未做多语言以外的可访问性审查。
+真实 flow 只使用 DeepSeek 账号（`HMZ_TEST_AGENT` / `HMZ_TEST_AGENT_PARTS`），测试脚本会拒绝 Claude。

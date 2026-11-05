@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Isolated preview of the @dsh-hmz/flow plugin on an installed DSH and hmz.
 #
-#   scripts/preview.sh start   # start isolated hmz web + DSH web (in tmux), print the URL
+#   scripts/preview.sh start   # start the isolated DSH web (in tmux)
 #   scripts/preview.sh stop    # stop only the preview tmux sessions
 #   scripts/preview.sh status
 #
 # Nothing here touches ~/.dsh, ~/.hmz or the global hmz daemon: DSH gets its own
 # DSH_HOME, hmz gets its own HUMANIZE_HOME and TMPDIR (so its own daemon socket).
+# No hmz web service is needed: the Flow page reads runs through the hmz SDK.
 #
 # Inputs (environment, with defaults that suit this machine):
 #   DSH_BIN       installed dsh launcher
@@ -38,7 +39,6 @@ hmz_tmp="$PREVIEW_DIR/tmp"
 demo="$PREVIEW_DIR/demo"
 logs="$PREVIEW_DIR/logs"
 profile_dir="$dsh_home/profiles/$PROFILE"
-hmz_url_file="$PREVIEW_DIR/private/hmz-web-url"
 
 tm() { tmux -L "$PREVIEW_TMUX" "$@"; }
 
@@ -70,7 +70,6 @@ JSON
   name: '@dsh-hmz/flow'
   config:
     python: '$hmz_python'
-    hmzWebUrlFile: '$hmz_url_file'
     stateDir: '$PREVIEW_DIR/state'
     hmzEnv:
       HUMANIZE_HOME: '$hmz_home'
@@ -86,14 +85,7 @@ YAML
 
 start() {
   prepare
-  if ! tm has-session -t hmz-web 2>/dev/null; then
-    rm -f "$hmz_url_file"
-    # hmz web prints its keyed address once; keep it only in a 0600 file.
-    tm new-session -d -s hmz-web -c "$demo" \
-      "umask 077; export HUMANIZE_HOME='$hmz_home' TMPDIR='$hmz_tmp'; '$HMZ_BIN' web --no-open --port 0 > '$hmz_url_file' 2> '$logs/hmz-web.err'"
-  fi
-  for _ in $(seq 1 100); do grep -q 'key=' "$hmz_url_file" 2>/dev/null && break; sleep 0.2; done
-  grep -q 'key=' "$hmz_url_file" || { echo "hmz web did not print its address; see $logs/hmz-web.err" >&2; exit 1; }
+  # The Flow page reads runs through the hmz SDK; no hmz web service is started.
   if ! tm has-session -t dsh 2>/dev/null; then
     tm new-session -d -s dsh -c "$demo" \
       "export DSH_HOME='$dsh_home' DSH_TELEMETRY_DISABLED=1; '$DSH_BIN' --profile '$PROFILE' --host 127.0.0.1 --port \${DSH_PORT:-0} --no-open > '$logs/dsh.out' 2> '$logs/dsh.err'"
@@ -109,7 +101,7 @@ start() {
 
 stop() {
   tm kill-session -t dsh 2>/dev/null || true
-  tm kill-session -t hmz-web 2>/dev/null || true
+  tm kill-session -t hmz-web 2>/dev/null || true  # left by older previews
   echo "preview stopped (hmz daemon hosts started by flows keep running, by design)"
 }
 

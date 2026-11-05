@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -399,6 +400,167 @@ def _binding(daemon: Any, view: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ------------------------------------------------- one run's own epic (Flow page)
+#
+# The Host resolves `epic` only from the asking DSH session's own run records;
+# these ops re-check that it is a run directory of the workspace's own epics and
+# read nothing else: no listing of other epics, no other workspace.
+
+_TRANSCRIPTS: dict[str, tuple[tuple[Any, ...], float, list[dict[str, Any]]]] = {}
+_TRANSCRIPT_LOCKS: dict[str, threading.Lock] = {}
+_TRANSCRIPT_LOCK = threading.Lock()
+#: Most actions one detail page carries, and the longest text of one field.
+_PAGE_ACTIONS = 60
+#: How long a cached transcript is trusted even when the epic's own files did not change:
+#: a session's log may live outside the epic (a CLI's home, or a reused agent's earlier
+#: epic), which the file signature below does not see.
+_TRANSCRIPT_TTL = 15.0
+_FIELD_CHARS = 4000
+
+
+_EPIC_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
+
+
+def _own_epic(workspace: str, epic: Any) -> Path:
+    """One run directory of this workspace's own epics.
+
+    hmz names a run's epic by its directory name (that is what a run snapshot and
+    a binding carry); an absolute path is accepted too. Either must resolve to a
+    direct child of `Hmz(workspace).epics.under()`.
+    """
+    from hmz.sdk import Hmz
+
+    if not isinstance(epic, str) or not epic:
+        raise Refused("epic is required")
+    under = Path(os.path.realpath(Hmz(workspace).epics.under()))
+    if os.path.isabs(epic):
+        path = Path(epic)
+    elif _EPIC_NAME.fullmatch(epic) and epic not in (".", ".."):
+        path = under / epic
+    else:
+        raise Refused("epic must be a run name or an absolute path")
+    real = Path(os.path.realpath(path))
+    if real.parent != under or not real.is_dir():
+        raise Refused("that epic is not a run of this workspace")
+    return real
+
+
+def _clip(value: Any, limit: int = _FIELD_CHARS) -> tuple[str, int]:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return (text, 0) if len(text) <= limit else (text[:limit], len(text) - limit)
+
+
+def _signature(epic: Path) -> tuple[Any, ...]:
+    seen = []
+    for root, _dirs, files in os.walk(epic):
+        for name in files:
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            seen.append((os.path.relpath(os.path.join(root, name), epic), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(seen))
+
+
+def _transcripts(workspace: str, epic: Path) -> list[dict[str, Any]]:
+    """The run's transcripts, read again only when a file of the epic changed.
+
+    One read at a time per epic: a second caller waits and then gets the cached copy.
+    """
+    from hmz.sdk import Hmz
+
+    key = str(epic)
+    with _TRANSCRIPT_LOCK:
+        lock = _TRANSCRIPT_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        signature = _signature(epic)
+        cached = _TRANSCRIPTS.get(key)
+        if cached is not None and cached[0] == signature and time.monotonic() - cached[1] < _TRANSCRIPT_TTL:
+            return cached[2]
+        read = Hmz(workspace).epics.transcripts(epic)
+        _TRANSCRIPTS[key] = (signature, time.monotonic(), read)
+        if len(_TRANSCRIPTS) > 16:
+            _TRANSCRIPTS.pop(next(iter(_TRANSCRIPTS)))
+        return read
+
+
+def op_epic_tree(args: dict[str, Any]) -> dict[str, Any]:
+    """Epic -> Agent -> Session of one run, from its own record (no transcripts read)."""
+    from hmz.sdk import Hmz
+
+    workspace = _workspace(args)
+    epic = _own_epic(workspace, args.get("epic"))
+    epics = Hmz(workspace).epics
+    ran = epics.read(epic)
+    names = args.get("names") if isinstance(args.get("names"), dict) else {}
+    role_of = {str(agent): str(role) for role, agent in names.items()}
+    agents: dict[str, dict[str, Any]] = {}
+    for one in epics.sessions(epic):
+        entry = agents.setdefault(one.agent, {"agent": one.agent, "role": role_of.get(one.agent, ""), "sessions": []})
+        entry["sessions"].append({
+            # The SDK's own session key, `<backend>:<id>`: an id alone may repeat across CLIs.
+            "key": f"{one.backend}:{one.ident}", "ident": one.ident, "backend": one.backend, "provider": one.provider,
+            "at": one.at, "flow": one.flow, "parent": one.parent,
+        })
+    drove = []
+    for one in (ran.agents if ran is not None else ()):
+        drove.append({k: str(getattr(one, k, "") or "") for k in ("agent", "backend", "model", "effort", "provider")})
+    for agent, role in role_of.items():
+        agents.setdefault(agent, {"agent": agent, "role": role, "sessions": []})
+    task, cut = _clip(ran.task if ran is not None else "", 2000)
+    return {
+        "epic": {
+            "name": epic.name, "flow": ran.flow if ran else "", "task": task, "taskCut": cut,
+            "began": ran.began if ran else "", "ended": ran.ended if ran else "", "how": ran.how if ran else "",
+            "ending": epics.ending(ran) if ran else "", "going": epics.going(epic),
+        },
+        "drove": drove,
+        "agents": list(agents.values()),
+    }
+
+
+def op_epic_session(args: dict[str, Any]) -> dict[str, Any]:
+    """What one session of one run did, newest page first, capped and paged."""
+    from hmz.sdk import Hmz
+
+    workspace = _workspace(args)
+    epic = _own_epic(workspace, args.get("epic"))
+    key = args.get("session")
+    if not isinstance(key, str) or not key:
+        raise Refused("session is required")
+    if key not in {f"{one.backend}:{one.ident}" for one in Hmz(workspace).epics.sessions(epic)}:
+        raise Refused("that session is not one this run opened")
+    found = next((one for one in _transcripts(workspace, epic) if str(one.get("key", "")) == key), None)
+    actions = list(found.get("actions") or []) if found else []
+    total = len(actions)
+    limit = max(1, min(_PAGE_ACTIONS, int(args.get("limit") or _PAGE_ACTIONS)))
+    before = args.get("before")
+    end = total if not isinstance(before, int) else max(0, min(total, before))
+    start = max(0, end - limit)
+    out = []
+    for index in range(start, end):
+        one = actions[index]
+        said = one.get("args") or {}
+        item: dict[str, Any] = {
+            "i": index, "category": str(one.get("category") or ""), "title": _clip(one.get("name") or "", 300)[0],
+            "at": one.get("at") or "", "seconds": one.get("seconds"),
+        }
+        text = said.get("prompt") or said.get("text") or said.get("thinking")
+        if text:
+            item["text"], item["textCut"] = _clip(text)
+        if item["category"] == "tool":
+            item["tool"] = str(said.get("tool") or "")
+            item["input"], item["inputCut"] = _clip(said.get("input") or "", 2000)
+            item["output"], item["outputCut"] = _clip(said.get("output") or "")
+            item["error"] = bool(said.get("error"))
+        out.append(item)
+    return {
+        "session": key, "agent": str(found.get("agent") or "") if found else "",
+        "total": total, "from": start, "to": end, "more": start > 0, "actions": out,
+        "logged": found is not None,
+    }
+
+
 # --------------------------------------------------------------------- actions
 
 
@@ -581,6 +743,8 @@ OPS = {
     "status": op_status,
     "observe": op_observe,
     "find_request": op_find_request,
+    "epic_tree": op_epic_tree,
+    "epic_session": op_epic_session,
     "start": op_start,
     "say": op_say,
     "answer": op_answer,

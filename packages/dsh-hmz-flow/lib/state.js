@@ -2,8 +2,10 @@
  * The plugin's own small persistent store: one JSON file, written atomically.
  *
  * Holds only integration metadata per DSH session: the flow selection and
- * include-history switch, the saved flow options, and the exact hmz run this
- * session started (its binding). hmz run state itself is never copied here.
+ * include-history switch, the saved flow options, every hmz run this session
+ * started (`runs`, append-only, keyed by an opaque run id), and which of them is
+ * the current one (`binding`, the run leader actions go to). hmz run state
+ * itself is never copied here; the session id is the ownership key, never cwd.
  *
  * Every mutation is staged on a copy, persisted (write temp + fsync + rename),
  * and only then published; a failed write leaves the visible state unchanged.
@@ -13,7 +15,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const VERSION = 2
+const VERSION = 3
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype', 'hasOwnProperty', 'toString', 'valueOf'])
 
@@ -34,6 +36,12 @@ export function defaultSelection() {
 }
 
 const FLOW_NAME = /^[A-Za-z0-9_.:-]{1,120}$/
+const RUN_ID = /^[A-Za-z0-9-]{8,80}$/
+
+/** @param {unknown} id */
+export function isValidRunId(id) {
+  return typeof id === 'string' && RUN_ID.test(id)
+}
 
 /**
  * Validate one selection patch coming from the Client.
@@ -98,12 +106,24 @@ export class StateStore {
       throw error
     }
     const parsed = JSON.parse(raw)
-    if (!parsed || (parsed.version !== VERSION && parsed.version !== 1) || !parsed.sessions || typeof parsed.sessions !== 'object') {
+    if (!parsed || ![1, 2, VERSION].includes(parsed.version) || !parsed.sessions || typeof parsed.sessions !== 'object') {
       throw new Error(`hmz-flow state ${this.file} has an unknown format; refusing to overwrite it`)
     }
     const data = emptyData()
     for (const id of Object.keys(parsed.sessions)) {
-      if (isValidSessionId(id)) data.sessions[id] = plain(parsed.sessions[id])
+      if (!isValidSessionId(id)) continue
+      const entry = plain(parsed.sessions[id])
+      // v1/v2 kept only the current binding: it becomes the first run of the history.
+      if (!entry.runs) {
+        entry.runs = Object.create(null)
+        entry.runOrder = []
+        const b = entry.binding
+        if (b && typeof b.requestId === 'string' && RUN_ID.test(b.requestId)) {
+          entry.runs[b.requestId] = plain({ ...b, runId: b.requestId })
+          entry.runOrder.push(b.requestId)
+        }
+      }
+      data.sessions[id] = entry
     }
     this.data = data
   }
@@ -188,11 +208,57 @@ export class StateStore {
     return entry && entry.binding ? plain(entry.binding) : undefined
   }
 
+  /**
+   * Set the current run of a session. A binding carrying a request id is also
+   * written into the session's run history under that id (its run id); a
+   * history entry is never removed by a later start, only by the refusal of
+   * the very start that created it (`null` while it was still `starting`).
+   */
   setBinding(sessionId, binding) {
     return this.update(sessionId, (entry) => {
+      const previous = entry.binding
+      if (!entry.runs) { entry.runs = Object.create(null); entry.runOrder = [] }
+      if (binding && isValidRunId(binding.requestId)) {
+        const runId = binding.requestId
+        if (!Object.hasOwn(entry.runs, runId)) entry.runOrder.push(runId)
+        entry.runs[runId] = plain({ ...binding, runId })
+      } else if (binding === null && previous && previous.phase === 'starting' && isValidRunId(previous.requestId)) {
+        delete entry.runs[previous.requestId]
+        entry.runOrder = entry.runOrder.filter((one) => one !== previous.requestId)
+      }
       entry.binding = binding === null ? null : plain(binding)
       return entry.binding ? plain(entry.binding) : null
     })
+  }
+
+  /** This session's runs, oldest first (copies). */
+  runsOf(sessionId) {
+    const entry = this.entry(sessionId)
+    if (!entry || !entry.runs) return []
+    return (entry.runOrder ?? []).filter((id) => Object.hasOwn(entry.runs, id)).map((id) => plain(entry.runs[id]))
+  }
+
+  /** One run of this session by its run id, or undefined (never another session's). */
+  run(sessionId, runId) {
+    if (!isValidRunId(runId)) return undefined
+    const entry = this.entry(sessionId)
+    return entry && entry.runs && Object.hasOwn(entry.runs, runId) ? plain(entry.runs[runId]) : undefined
+  }
+
+  /** Update one history run that is not the current binding (e.g. a delivered notice). */
+  updateRun(sessionId, runId, patch) {
+    if (!isValidRunId(runId)) throw new Error('invalid run id')
+    return this.update(sessionId, (entry) => {
+      if (!entry.runs || !Object.hasOwn(entry.runs, runId)) throw new Error('no such run in this session')
+      entry.runs[runId] = plain({ ...entry.runs[runId], ...patch, runId })
+      if (entry.binding && entry.binding.requestId === runId) entry.binding = plain({ ...entry.binding, ...patch })
+      return plain(entry.runs[runId])
+    })
+  }
+
+  /** Sessions with any run history. */
+  sessionsWithRuns() {
+    return Object.keys(this.data.sessions).filter((id) => (this.data.sessions[id].runOrder ?? []).length > 0)
   }
 
   /** Every session id with a binding, for reconnect after restart. */

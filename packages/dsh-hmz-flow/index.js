@@ -4,7 +4,9 @@
  * - `/api/hmz-flow/rpc`: an exact Connection Fetch route; DSH applies its own
  *   owner authentication before this code runs. Used only by the Client plugin.
  * - A stdio Python adapter that talks to hmz through its public SDK.
- * - An authenticated, read-only reverse proxy so native hmz web is embedded.
+ * - The Flow page's data: this DSH session's runs and, for one of them, its
+ *   Epic -> Agent -> Session tree and transcripts, read through the hmz SDK and
+ *   masked to the session (lib/runview.js). No hmz web service is involved.
  * - Leader tools: list / status / start / send / answer (asks the real user) / stop.
  * - Write protection of the session's agent tree while its run is active.
  */
@@ -13,7 +15,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AdapterClient, AdapterError } from './lib/adapter-client.js'
-import { createHmzProxy } from './lib/proxy.js'
+import { MaskError, RunView } from './lib/runview.js'
 import { StateStore, isValidSessionId } from './lib/state.js'
 import { describeSelection, formatStatus, formatBinding } from './lib/present.js'
 import { FlowController, FlowError, ACTIVE } from './lib/controller.js'
@@ -44,16 +46,6 @@ export function resolvePython(config, env = process.env) {
 }
 
 /** Read `http://127.0.0.1:PORT/?key=KEY` that `hmz web` printed, from a private file. */
-export function readHmzWebAddress(file) {
-  const text = readFileSync(file, 'utf8')
-  const match = text.match(/https?:\/\/[^\s]+\?key=[^\s]+/)
-  if (!match) throw new Error(`no hmz web address in ${file}`)
-  const url = new URL(match[0])
-  const key = url.searchParams.get('key')
-  if (!key) throw new Error(`hmz web address in ${file} has no key`)
-  return { origin: url.origin, key }
-}
-
 class UserFacing extends Error {}
 
 export function apply(ctx, rawConfig = {}) {
@@ -69,37 +61,6 @@ export function apply(ctx, rawConfig = {}) {
     timeoutMs: config.adapterTimeoutMs ?? 60000,
   })
   ctx.effect(() => () => adapter.close(), 'hmz-flow: adapter')
-
-  // ---------------------------------------------------------------- proxy
-  let proxy = null
-  let proxyError = null
-  if (config.hmzWebUrlFile) {
-    const dshOrigins = () => {
-      const port = ctx.webServer.port
-      const extra = Array.isArray(config.frameAncestors) ? config.frameAncestors : []
-      return [`http://127.0.0.1:${port}`, `http://localhost:${port}`, ...extra]
-    }
-    proxy = createHmzProxy({
-      upstream: () => readHmzWebAddress(config.hmzWebUrlFile),
-      frameAncestors: dshOrigins,
-      host: config.proxyHost ?? '127.0.0.1',
-      port: config.proxyPort ?? 0,
-      readOnly: config.embedReadOnly !== false,
-      logger,
-    })
-    ctx.effect(() => {
-      const listening = proxy.listen().then(
-        (port) => logger.info?.('hmz embed proxy listening on %s:%d', config.proxyHost ?? '127.0.0.1', port),
-        (error) => { proxyError = error; logger.warn('hmz embed proxy failed: %s', error.message) },
-      )
-      return async () => {
-        await proxy.close()
-        await listening
-      }
-    }, 'hmz-flow: embed proxy')
-  } else {
-    proxyError = new Error('hmzWebUrlFile is not configured; the Flow view cannot embed hmz web')
-  }
 
   // ------------------------------------------------------------- helpers
   function liveAgent(sessionId) {
@@ -171,6 +132,8 @@ export function apply(ctx, rawConfig = {}) {
     notify, onProtect, logger,
   })
 
+  const runView = new RunView({ store, adapter, lastObserved: (id) => controller.lastObserved(id) })
+
   ctx.effect(() => ctx.tools.guard((exec) => {
     const ids = controller.protectedIds()
     if (ids.size === 0) return undefined
@@ -232,28 +195,10 @@ export function apply(ctx, rawConfig = {}) {
     },
     // User-only: the leader has no tool for this.
     releaseUnknown: async ({ sessionId }) => controller.releaseUnknown(sessionId),
-    embed: async ({ sessionId }) => {
-      if (!proxy || proxyError) throw new UserFacing(`hmz embed unavailable: ${proxyError?.message ?? 'proxy not started'}`)
-      if (!proxy.port) throw new UserFacing('hmz embed proxy is still starting')
-      let hash = '#/'
-      let target = 'home'
-      const binding = store.binding(sessionId)
-      let current = null
-      if (binding?.epicName) {
-        hash = `#/epics/${encodeURIComponent(binding.epicName)}`
-        target = 'bound'
-      } else {
-        try {
-          current = await adapter.request('status', { workspace: workspaceOfSession(sessionId) })
-          // A run that is not this session's is shown, never bound.
-          if (current?.held && current.epicName && (current.state === 'running' || current.stopping != null)) {
-            hash = `#/epics/${encodeURIComponent(current.epicName)}`
-            target = 'unbound-running'
-          }
-        } catch (error) { current = { error: error.message } }
-      }
-      return { ...proxy.mintTicket(hash), hash, target, binding: binding ?? null, status: current, readOnly: config.embedReadOnly !== false }
-    },
+    // The Flow page, masked to this DSH session: no run -> empty, no hmz call.
+    runs: async ({ sessionId }) => runView.list(sessionId),
+    runTree: async ({ sessionId, runId }) => runView.tree(sessionId, runId),
+    runSession: async ({ sessionId, runId, sessionKey, before }) => runView.session(sessionId, runId, sessionKey, before),
   }
 
   ctx.effect(() => ctx.connection.fetch.register({
@@ -268,6 +213,7 @@ export function apply(ctx, rawConfig = {}) {
       try {
         return json({ ok: true, result: await ops[body.op](body) })
       } catch (error) {
+        if (error instanceof MaskError) return json({ ok: false, error: error.message, outcome: 'refused' }, 403)
         const outcome = error instanceof AdapterError || error instanceof FlowError ? error.outcome : 'refused'
         return json({ ok: false, error: error.message, outcome }, 200)
       }
