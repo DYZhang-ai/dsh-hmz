@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
       'view.task': '任务',
       'phase.starting': '启动中',
       'phase.running': '运行中',
+      'phase.waitingAnswer': '等待回答（{n}）',
       'phase.stopping': '停止中',
       'phase.unknown': '结果未知',
       'phase.ended': '已结束',
@@ -154,6 +155,7 @@ window.__ModuleLoader__.load({
       'view.task': 'Task',
       'phase.starting': 'starting',
       'phase.running': 'running',
+      'phase.waitingAnswer': 'waiting for your answer ({n})',
       'phase.stopping': 'stopping',
       'phase.unknown': 'outcome unknown',
       'phase.ended': 'ended',
@@ -261,7 +263,7 @@ window.__ModuleLoader__.load({
 .hmzf-roles li{padding:2px 0;color:var(--dsw-alias-label-secondary)}
 .hmzf-link{border:none;background:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;padding:0 4px}
 .hmzf-error{color:var(--dsw-alias-label-danger,#c33)}
-.hmzf-split{flex-direction:row;gap:0;overflow:hidden}
+.hmzf-view.hmzf-split{flex-direction:row;gap:0;overflow:hidden}
 .hmzf-nav{width:260px;flex:none;overflow:auto;padding:8px 10px;border-right:0.5px solid var(--dsw-alias-border-l2);font-size:13px}
 .hmzf-main{flex:1;min-width:0;overflow:auto;padding:10px 16px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary)}
 .hmzf-run,.hmzf-session,.hmzf-agent-head{display:block;width:100%;text-align:left;border:none;background:none;color:inherit;font:inherit;padding:4px 6px;border-radius:6px;cursor:pointer}
@@ -535,7 +537,7 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
     function phaseLabel(t, run, pending) {
       const base = t(`phase.${run.phase}`) || run.phase
       if (run.phase === 'ended') return `${base}${run.endedHow ? ` · ${run.endedHow}` : ''}`
-      if (run.phase === 'running' && pending && pending.length) return `${base} · ${pending.length} ?`
+      if (run.phase === 'running' && pending && pending.length) return `${base} · ${fmt(t('phase.waitingAnswer'), { n: pending.length })}`
       return base
     }
     const ACTIVE = new Set(['starting', 'running', 'stopping', 'unknown'])

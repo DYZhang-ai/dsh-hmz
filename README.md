@@ -37,7 +37,8 @@
 
 - Client 只发送 `sessionId` 和不透明的 `runId`（以及要查看的 Session key）。
 - Host（`lib/runview.js`）只在**该会话自己的 run 记录**里解析出受信的 epic：
-  - 别的会话的 runId、格式不合法的 id、该 run 没有打开过的 Session key，都会在调用适配器之前被拒绝（HTTP 403）；
+  - 别的会话的 runId、格式不合法的 id，在调用适配器之前就被拒绝（HTTP 403）；
+  - 该 run 没有打开过的 Session key，在读取转录之前被拒绝（403）。判断 key 是否属于该 run 时，若 Host 还没有缓存这个 run 的树，会先读取一次**本 run 自己的** Epic→Agent→Session 树；
   - 没有 run 的会话直接得到空列表，不调用任何 hmz 接口。
 - 适配器（`epic_tree` / `epic_session`）再做一层检查：epic 必须是该工作目录自己的 epic 目录（`Hmz(workspace).epics.under()` 下的直接子目录，可以用名字或绝对路径指定，拒绝路径穿越和符号链接越界），Session key 使用 SDK 的复合键 `<backend>:<id>`。
 - 读取方式：
@@ -76,7 +77,8 @@
 
 ```bash
 # 默认：.preview/，tmux socket dsh-hmz-preview（端口随机，或用 DSH_PORT 指定）
-scripts/preview.sh start | status | stop
+scripts/preview.sh start
+# 查看：scripts/preview.sh status    停止：scripts/preview.sh stop
 # 第二套并行预览：独立 DSH home、状态、tmux socket 和端口；复用第一套的 hmz 账号 home
 PREVIEW_DIR=$PWD/.preview-test PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 \
   PREVIEW_HMZ_HOME=$PWD/.preview/hmz-home PREVIEW_CREDENTIALS_FROM=$PWD/.preview/dsh-home \
@@ -103,20 +105,25 @@ PREVIEW_DIR=$PWD/.preview-test PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 \
 
 ## 测试
 
+以下命令都在**仓库根目录**执行；hmz 安装路径含空格，所以 `"$PY"` 必须加引号。
+
 ```bash
-cd packages/dsh-hmz-flow && npm test        # Node 行为测试：状态 / 迁移 / 范围限定 / 路由 / 控制器 / 策略 / 选项 / 消息 / 适配器客户端
-PY="<hmz-install>/venv/bin/python"
-$PY -I tests/adapter_start_unit.py adapter/hmz_adapter.py   # 启动绑定故障注入
-$PY -I tests/adapter_epic_unit.py  adapter/hmz_adapter.py   # epic 名解析 / 越界 / 复合键 / 缓存 TTL
+(cd packages/dsh-hmz-flow && npm test)      # Node 行为测试：状态 / 迁移 / 范围限定 / 路由 / 控制器 / 策略 / 选项 / 消息 / 适配器客户端
+PY="/root/artifacts/hmz-installed-dsh-20261104/test install/venv/bin/python"   # hmz 安装自带的 python
+ADAPTER=packages/dsh-hmz-flow/adapter/hmz_adapter.py
+"$PY" -I packages/dsh-hmz-flow/tests/adapter_start_unit.py "$ADAPTER"   # 启动绑定故障注入
+"$PY" -I packages/dsh-hmz-flow/tests/adapter_epic_unit.py  "$ADAPTER"   # epic 名解析 / 越界 / 复合键 / 缓存 TTL
 # 真实 SDK 只读读取已有 epic（不启动任何东西）
-HUMANIZE_HOME=... TMPDIR=<私有 tmp> $PY -I tests/e2e/adapter_epic_read.py <adapter.py> <workspace> <epic名或路径> <另一目录的epic> '<names-json>'
+HUMANIZE_HOME=... TMPDIR=<私有 tmp> "$PY" -I tests/e2e/adapter_epic_read.py "$ADAPTER" <workspace> <epic名或路径> <另一目录的epic> '<names-json>'
 # 真实 SDK 动作（会启动两个极小的 DeepSeek chat run；拒绝 Claude）
-HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... $PY -I tests/e2e/adapter_actions.py <adapter.py> <测试目录>
-# 浏览器（Playwright），在隔离预览上执行
-tests/e2e/view_race.py <preview-dir>          # 真实 client.js + 模拟 RPC：切换 run / Session 时的迟到响应
-tests/e2e/flow_rpc_real.py <preview-dir>      # 真实 Host + 适配器 + SDK：本会话读取，跨会话 403
-tests/e2e/verify_flow.py <preview-dir> <shots> rlar|chat     # 真实 leader + DeepSeek flow
-tests/e2e/verify_sessions.py <preview-dir> <shots>           # 会话隔离、历史、重启（会启动真实 DeepSeek run）
+HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... "$PY" -I tests/e2e/adapter_actions.py "$ADAPTER" <测试目录>
+# 浏览器（Playwright；用带 playwright 的 python，并在 tests/e2e 目录里运行，因为脚本要导入同目录的 dshpage.py）
+PW=/root/src/humanize-installed-dsh/.venv/bin/python
+(cd tests/e2e && "$PW" view_race.py "$PWD/../../.preview-test")       # 真实 client.js + 模拟 RPC：切换 run / Session 时的迟到响应
+(cd tests/e2e && "$PW" flow_rpc_real.py "$PWD/../../.preview-test")   # 真实 Host + 适配器 + SDK：本会话读取，跨会话 403
+# 会启动真实 DeepSeek run，需 PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 等专用测试预览
+(cd tests/e2e && "$PW" verify_flow.py "$PWD/../../.preview-test" "$PWD/../../.preview-test/shots" chat)
+(cd tests/e2e && "$PW" verify_sessions.py "$PWD/../../.preview-test" "$PWD/../../.preview-test/shots")
 ```
 
 真实 flow 只使用 DeepSeek 账号（`HMZ_TEST_AGENT` / `HMZ_TEST_AGENT_PARTS`），测试脚本会拒绝 Claude。
