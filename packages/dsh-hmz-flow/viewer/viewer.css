@@ -1,0 +1,16 @@
+/*
+ * The Flow viewer shows hmz's own epic view (graph / list, agents, sessions,
+ * the EPIC / ASIDE panel). Controls that act outside the run or on its own are
+ * hidden here: in DSH the leader sends, answers and stops (the Flow page has
+ * its own Stop flow button), and the viewer can reach no server to do them.
+ */
+/* The dock: hmz's own message box, its answers and "Resume" footer. */
+.view-epic [data-hmz="dock"] { display: none !important; }
+/* Header actions that leave the run or change things outside it, and "Copy link"
+   (the copier: it would copy the sandboxed viewer's own address). The panel toggle stays. */
+.view-epic a[href*="resume="],
+.view-epic [data-hmz="exomyth-open"],
+.view-epic a[download],
+.view-epic [data-hmz="upload"],
+.view-epic .bar-actions > button.btn.quiet.small,
+.view-epic .bar-side { display: none !important; }

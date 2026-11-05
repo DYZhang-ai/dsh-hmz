@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { patchEpicView } from './viewer-patches.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const VIEWER = join(HERE, '..', 'viewer')
@@ -22,7 +23,7 @@ export const HMZ_FILES = Object.freeze(new Set([
   'views/epic.js', 'acting.js', 'api.js', 'composer.js', 'dom.js', 'epic.js', 'graph.js', 'held.js',
   'shell.js', 'transcript.js', 'ui.js', 'style.css', 'theme.js', 'mark.svg',
 ]))
-const OWN_FILES = Object.freeze(new Set(['boot.js', 'viewer.js', 'shim/app.js', 'shim/sidebar.js']))
+const OWN_FILES = Object.freeze(new Set(['boot.js', 'viewer.js', 'viewer.css', 'shim/app.js', 'shim/sidebar.js']))
 const TYPES = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.html': 'text/html; charset=utf-8' }
 
 export function importMap(base) {
@@ -39,6 +40,7 @@ export function viewerPage(base) {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">
 <link rel="stylesheet" href="${base}/hmz/style.css">
+<link rel="stylesheet" href="${base}/viewer.css">
 <script src="${base}/hmz/theme.js"></script>
 <script src="${base}/boot.js"></script>
 <script type="importmap">${map}</script>
@@ -69,6 +71,9 @@ export function viewerHandler({ staticDir, logger }) {
     }
     const refuse = (status, text) => { res.writeHead(status, { ...common, 'content-type': 'text/plain; charset=utf-8' }); res.end(text) }
     if (req.method !== 'GET' && req.method !== 'HEAD') return refuse(405, 'GET only')
+    // Canonical paths only: no dot segments, backslashes or empty segments.
+    const raw = String(req.url ?? '').split('?')[0]
+    if (/(^|\/)\.\.?(\/|$)|\\|\/\//.test(raw) || /%2e|%2f|%5c/i.test(raw)) return refuse(404, 'not part of the Flow viewer')
     try {
       if (rest === 'index.html') {
         const host = String(req.headers.host ?? '')
@@ -95,8 +100,16 @@ export function viewerHandler({ staticDir, logger }) {
       if (rest.startsWith('hmz/') && HMZ_FILES.has(rest.slice(4))) file = join(await staticDir(), rest.slice(4))
       else if (OWN_FILES.has(rest)) file = join(VIEWER, rest)
       if (!file) return refuse(404, 'not part of the Flow viewer')
-      const body = await readFile(file)
-      res.writeHead(200, { ...common, 'content-type': typeOf(file) })
+      let body = await readFile(file)
+      const extra = {}
+      if (rest === 'hmz/views/epic.js') {
+        // hmz's own view with the live-trace patches (lib/viewer-patches.js).
+        const patched = patchEpicView(body.toString('utf8'))
+        if (patched.missing.length) logger?.warn?.('hmz-flow viewer: epic view not patched (anchors missing: %s)', patched.missing.join(', '))
+        body = Buffer.from(patched.text)
+        extra['x-hmzf-patches'] = patched.missing.length ? `none; missing ${patched.missing.length}` : `applied ${patched.applied.length}`
+      }
+      res.writeHead(200, { ...common, ...extra, 'content-type': typeOf(file) })
       res.end(req.method === 'HEAD' ? undefined : body)
     } catch (error) {
       logger?.warn?.('hmz-flow viewer: %s', error.message)

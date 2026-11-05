@@ -31,6 +31,9 @@ function route() {
     history.replaceState(null, '', home())
     ;({ parts, query } = parse(location.hash))
   }
+  // hmz's view moves within the same run itself (keeping its graph zoom and
+  // selection); it is mounted again only when it says it cannot.
+  if (mounted && typeof mounted.moved === 'function' && mounted.moved({ parts, query })) return
   if (mounted) mounted.leave()
   page.replaceChildren()
   const made = mount(page, { parts, query })

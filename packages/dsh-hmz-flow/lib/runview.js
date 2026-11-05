@@ -77,7 +77,13 @@ export class RunView {
     if (op !== 'web_detail' && op !== 'web_trace') throw new MaskError('not a viewer read')
     const run = this.resolve(sessionId, runId)
     if (!run.epic) throw new MaskError('the run has no epic yet')
-    return this.deps.adapter.request(op, { workspace: run.workspace, epic: run.epic })
+    const answer = await this.deps.adapter.request(op, { workspace: run.workspace, epic: run.epic })
+    if (op !== 'web_detail') return answer
+    // Whether the viewer should keep reading this run's turns: the session's own
+    // binding says (a chat waiting for its user is active though its last turn is done).
+    const current = this.deps.store.binding(sessionId)
+    const active = !!current && current.requestId === runId && ['starting', 'running', 'stopping', 'unknown'].includes(current.phase)
+    return { ...answer, _dshFlow: { active, phase: current && current.requestId === runId ? current.phase : run.phase } }
   }
 
   async tree(sessionId, runId) {
