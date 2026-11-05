@@ -115,8 +115,10 @@ PW=/root/src/humanize-installed-dsh/.venv/bin/python
 (cd tests/e2e && "$PW" flow_rpc_real.py "$PWD/../../.preview-test")
 # 原生 viewer 夹具：detail 固定、trace 新增消息；用 adapter 的 web_detail / web_trace 导出一个真实 epic 的 JSON 作为输入
 (cd tests/e2e && "$PW" viewer_live_fixture.py 44190 /tmp/detail.json /tmp/trace.json)
-# 真实 DeepSeek 任务（会运行模型；拒绝 Claude）：tests/e2e/adapter_actions.py、tests/e2e/verify_flow.py
+# 真实 SDK 控制测试（会运行模型；拒绝 Claude）：tests/e2e/adapter_actions.py
 ```
+
+`tests/e2e/verify_flow.py` 保留了旧版验收过程，其中“保存后面板仍打开”和显式要求 leader 启动的步骤已不适用，不能作为当前普通消息自动启动的验收。当前真实浏览器验收见下方主审证据。
 
 Node 测试覆盖：
 - 状态与迁移；会话范围限定 / 路由 403；控制器；策略；选项；消息；适配器客户端；
