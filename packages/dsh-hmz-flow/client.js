@@ -32,6 +32,10 @@ window.__ModuleLoader__.load({
       'panel.loading': '读取中…',
       'panel.later': '角色与预算会在启动时冻结；leader 不能修改这些选项。',
       'panel.saved': '已保存',
+      'panel.modelNotInDsh': '模型 {model} 不在 DSH 当前模型目录中（hmz 的模型列表可能过时），按原样保存；DSH 当前可用：{models}',
+      'stop.button': '停止 flow',
+      'stop.stopping': '正在停止…',
+      'stop.confirm': '停止这个 flow 任务？（这会停止 hmz 里正在运行的任务，不同于停止 leader 的回复）',
       'panel.error': '错误',
       'panel.agents': 'AGENTS',
       'panel.cli': 'CLI',
@@ -81,6 +85,9 @@ window.__ModuleLoader__.load({
       'view.toolNoOutput': '（hmz 记录中无输出）',
       'view.waiting': '等待你回答：{text}（请在下方输入框告诉 leader）',
       'view.task': '任务',
+      'view.readonly': '在 DSH 里请通过 leader 发送、回答或停止',
+      'view.outOfScope': '不属于这个 DSH 会话的这个任务',
+      'view.autoFailed': '上一个任务没有进入 flow（{outcome}）：{why}',
       'phase.starting': '启动中',
       'phase.running': '运行中',
       'phase.waitingAnswer': '等待回答（{n}）',
@@ -114,6 +121,10 @@ window.__ModuleLoader__.load({
       'panel.loading': 'Loading…',
       'panel.later': 'Roles and budget are frozen at start; the leader cannot change these options.',
       'panel.saved': 'Saved',
+      'panel.modelNotInDsh': 'Model {model} is not in DSH\'s current model catalog (hmz\'s list may be outdated); kept as entered. DSH serves: {models}',
+      'stop.button': 'Stop flow',
+      'stop.stopping': 'Stopping…',
+      'stop.confirm': 'Stop this flow run? (This stops the run in hmz, not the leader\'s reply.)',
       'panel.error': 'Error',
       'panel.agents': 'AGENTS',
       'panel.cli': 'CLI',
@@ -163,6 +174,9 @@ window.__ModuleLoader__.load({
       'view.toolNoOutput': '(no output recorded by hmz)',
       'view.waiting': 'Waiting for your answer: {text} (tell the leader in the composer below)',
       'view.task': 'Task',
+      'view.readonly': 'In DSH, send, answer or stop through the leader',
+      'view.outOfScope': 'Not part of this DSH session\'s run',
+      'view.autoFailed': 'The last task did not enter the flow ({outcome}): {why}',
       'phase.starting': 'starting',
       'phase.running': 'running',
       'phase.waitingAnswer': 'waiting for your answer ({n})',
@@ -294,6 +308,10 @@ window.__ModuleLoader__.load({
 .hmzf-roles li{padding:2px 0;color:var(--dsw-alias-label-secondary)}
 .hmzf-link{border:none;background:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;padding:0 4px}
 .hmzf-error{color:var(--dsw-alias-label-danger,#c33)}
+.hmzf-runbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:0.5px solid var(--dsw-alias-border-l2);flex-wrap:wrap}
+.hmzf-chip{border:0.5px solid var(--dsw-alias-border-l2);background:none;color:inherit;font:inherit;font-size:12px;padding:2px 8px;border-radius:12px;cursor:pointer}
+.hmzf-grow{flex:1}
+.hmzf-native{flex:1;width:100%;min-height:520px;border:0;background:var(--dsw-alias-bg-module-platform)}
 .hmzf-view.hmzf-split{flex-direction:row;gap:0;overflow:hidden}
 .hmzf-nav{width:260px;flex:none;overflow:auto;padding:8px 10px;border-right:0.5px solid var(--dsw-alias-border-l2);font-size:13px}
 .hmzf-main{flex:1;min-width:0;overflow:auto;padding:10px 16px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary)}
@@ -323,6 +341,8 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
 .hmzf-check{display:inline-flex;align-items:center;gap:4px;margin-right:12px}
 .hmzf-role{padding:6px 0;border-top:0.5px solid var(--dsw-alias-border-l2)}
 .hmzf-save{height:28px;padding:0 14px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-module-platform,#fff);cursor:pointer;font:inherit}
+.hmzf-stop{height:26px;margin-left:8px;padding:0 10px;border-radius:6px;border:0.5px solid var(--dsw-alias-label-danger,#c33);background:transparent;color:var(--dsw-alias-label-danger,#c33);font:inherit;font-size:12px;cursor:pointer}
+.hmzf-stop:disabled{opacity:.6;cursor:default}
 .hmzf-bound{padding:6px 8px;margin-bottom:6px;border-radius:8px;border:0.5px solid var(--dsw-alias-border-l2)}
 .hmzf-active{border-color:var(--dsw-alias-label-secondary)}
 .hmzf-view{display:flex;flex-direction:column;height:100%;min-height:0;flex:1}
@@ -419,6 +439,7 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         const one = useSessionEntry(sessionId)
         const [declared, setDeclared] = React.useState(null)
         const [backends, setBackends] = React.useState(null)
+        const [dshModels, setDshModels] = React.useState(null)
         const [flows, setFlows] = React.useState(null)
         const [form, setForm] = React.useState(null)
         const [problem, setProblem] = React.useState(null)
@@ -434,9 +455,17 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             (e) => { if (live) setProblem(e.message) },
           )
           rpc('backends', sessionId).then((b) => { if (live) setBackends(b) }, () => {})
+          // The models DSH itself serves: what an hmz `dsh` agent actually runs.
+          rpc('dshModels', sessionId).then((d) => { if (live) setDshModels(d.models || []) }, () => { if (live) setDshModels([]) })
           rpc('flows', sessionId).then((d) => { if (live) setFlows(d.flows) }, () => {})
           return () => { live = false }
         }, [one.open, flow, sessionId])
+        React.useEffect(() => {
+          if (!form || !dshModels || !dshModels.length) return
+          const empty = Object.entries(form.agents).filter(([, p]) => p.cli === 'dsh' && !p.model)
+          if (!empty.length) return
+          setForm((f) => ({ ...f, agents: Object.fromEntries(Object.entries(f.agents).map(([r, p]) => [r, p.cli === 'dsh' && !p.model ? { ...p, model: dshModels[0].id } : p])) }))
+        }, [form, dshModels])
         React.useEffect(() => {
           if (!one.open || !sessionId) return undefined
           const timer = setInterval(() => { void refresh(sessionId) }, 5000)
@@ -464,7 +493,24 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
           setNote('')
           let options
           try { options = formToOptions(form) } catch (e) { setNote(`${t('panel.error')}: params JSON — ${e.message}`); return }
-          try { await rpc('setOptions', sessionId, { flow, options }); setNote(t('panel.saved')) } catch (e) { setNote(`${t('panel.error')}: ${e.message}`) }
+          try {
+            await rpc('setOptions', sessionId, { flow, options })
+          } catch (e) {
+            // A failed save keeps the panel open with the reason.
+            setNote(`${t('panel.error')}: ${e.message}`)
+            return
+          }
+          // Saved: the panel folds away; flow选项 opens it again with the saved values.
+          setNote(t('panel.saved'))
+          setOpen(sessionId, false)
+        }
+        async function stopRun() {
+          if (!binding || !window.confirm(t('stop.confirm'))) return
+          setNote('')
+          try {
+            await rpc('stopRun', sessionId, { runId: binding.requestId, identity: { hostPid: binding.hostPid, hostStarted: binding.hostStarted, run: binding.run, epic: binding.epic } })
+            await refresh(sessionId)
+          } catch (e) { setNote(`${t('panel.error')}: ${e.message}`) }
         }
         async function release() {
           if (!window.confirm(t('panel.releaseConfirm'))) return
@@ -484,7 +530,10 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             `${t('panel.bound')}: run #${binding.run ?? '?'} · ${binding.flow || ''} · ${binding.phase}${binding.epicName ? ` · ${binding.epicName}` : ''}`,
             active ? h('div', { className: 'hmzf-desc' }, t('panel.protect')) : null,
             binding.phase === 'unknown' ? h('button', { type: 'button', className: 'hmzf-link', 'data-hmz-flow': 'release', onClick: release }, t('panel.release')) : null,
+            binding.phase === 'running' ? h('button', { type: 'button', className: 'hmzf-stop', 'data-hmz-flow': 'stop', onClick: stopRun }, t('stop.button')) : null,
+            binding.phase === 'stopping' ? h('button', { type: 'button', className: 'hmzf-stop', disabled: true, 'data-hmz-flow': 'stop' }, t('stop.stopping')) : null,
           ) : null,
+          note ? h('div', { className: note.startsWith(t('panel.error')) ? 'hmzf-error' : 'hmzf-desc', 'data-hmz-flow': 'panel-note' }, note) : null,
           h('div', { className: 'hmzf-row' },
             h('label', { htmlFor: `hmzf-flow-${sessionId}` }, t('panel.flow')),
             h('select', {
@@ -507,8 +556,11 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             h('div', { className: 'hmzf-sec' }, t('panel.agents')),
             declared.agents.filter((a) => !a.auto).map((role) => {
               const p = form.agents[role.name] || { cli: '', account: '', model: '', effort: '' }
-              const models = modelsOf(p.cli, p.account)
-              const model = models.find((m) => m.name === p.model)
+              const hmzModels = modelsOf(p.cli, p.account)
+              const fromDsh = p.cli === 'dsh' && dshModels ? dshModels.map((m) => ({ name: m.id, efforts: [] })) : []
+              const models = [...fromDsh, ...hmzModels.filter((m) => !fromDsh.some((d) => d.name === m.name))]
+              const model = hmzModels.find((m) => m.name === p.model)
+              const outdated = p.cli === 'dsh' && dshModels && dshModels.length && p.model && !dshModels.some((m) => m.id === p.model)
               const efforts = model ? model.efforts : (p.effort ? [p.effort] : [])
               return h('div', { className: 'hmzf-role', key: role.name, 'data-hmz-role': role.name },
                 h('div', { className: 'hmzf-cap' }, `${role.name}${role.required ? '' : t('panel.optional')}`),
@@ -522,6 +574,7 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
                   h('datalist', { id: `hmzf-models-${sessionId}-${role.name}`, key: `${role.name}.models` }, models.map((m) => h('option', { key: m.name, value: m.name }))),
                   select(t('panel.effort'), p.effort, [['', t('panel.default')], ...efforts.map((e) => [e, e])], (v) => setAgent(role.name, { effort: v }), `${role.name}.effort`),
                 ),
+                outdated ? h('div', { className: 'hmzf-error', 'data-hmz-flow': 'model-warning' }, fmt(t('panel.modelNotInDsh'), { model: p.model, models: dshModels.map((m) => m.id).join(', ') })) : null,
                 h('div', { className: 'hmzf-desc' }, `${role.permission ? Object.entries(role.permission).map(([k, v]) => `${k}:${v}`).join(' · ') : ''}`))
             }),
             h('div', { className: 'hmzf-sec' }, t('panel.budget')),
@@ -555,7 +608,7 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             ),
             h('div', { className: 'hmzf-row' },
               h('button', { type: 'button', className: 'hmzf-save', onClick: saveForm, 'data-hmz-flow': 'save' }, t('panel.save')),
-              h('span', { className: 'hmzf-desc', 'data-hmz-flow': 'save-note' }, note || t('panel.later'))),
+              h('span', { className: 'hmzf-desc', 'data-hmz-flow': 'save-note' }, t('panel.later'))),
           ) : h('div', { className: 'hmzf-desc' }, problem ? `${t('panel.error')}: ${problem}` : t('panel.loading')),
           one.error ? h('div', { className: 'hmzf-error' }, `${t('panel.error')}: ${one.error}`) : null,
         )
@@ -574,184 +627,121 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
     const ACTIVE = new Set(['starting', 'running', 'stopping', 'unknown'])
 
     /**
-     * One session's Flow page. Mounted per DSH session (keyed by sessionId), so a
-     * switch never shows the previous session's data. Within it, every request
-     * carries the selection it was made for and is dropped if the selection moved.
+     * hmz's own epic view of one run, in a sandboxed iframe. The viewer cannot
+     * reach any server; it asks this page, which answers only this run's two
+     * reads (hmz's own detail and trace), for this session, and refuses the rest.
+     */
+    function NativeFrame({ t, sessionId, run }) {
+      const frame = React.useRef(null)
+      React.useEffect(() => {
+        const epic = run.epicName
+        const answer = async (said) => {
+          const path = String(said.path || '')
+          const url = new URL(path, 'http://viewer')
+          const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+          if (said.method !== 'GET') return { status: 403, body: { error: t('view.readonly') } }
+          if (parts[0] === 'api' && parts[1] === 'runs' && parts[2] === epic && parts.length === 3) {
+            return { status: 200, body: await rpc('viewDetail', sessionId, { runId: run.runId }) }
+          }
+          if (parts[0] === 'api' && parts[1] === 'runs' && parts[2] === epic && parts[3] === 'trace' && parts.length === 4) {
+            return { status: 200, body: await rpc('viewTrace', sessionId, { runId: run.runId }) }
+          }
+          if (parts[0] === 'api' && parts[1] === 'btw') return { status: 200, body: { asides: [], default: '' } }
+          return { status: 404, body: { error: t('view.outOfScope') } }
+        }
+        const onMessage = (event) => {
+          if (!frame.current || event.source !== frame.current.contentWindow) return
+          const said = event.data
+          if (!said || said.hmzf !== 'fetch' || typeof said.id !== 'number') return
+          answer(said).then(
+            (reply) => frame.current && frame.current.contentWindow.postMessage({ hmzf: 'reply', id: said.id, ...reply }, '*'),
+            (error) => frame.current && frame.current.contentWindow.postMessage({ hmzf: 'reply', id: said.id, status: 502, body: { error: error.message } }, '*'),
+          )
+        }
+        window.addEventListener('message', onMessage)
+        return () => window.removeEventListener('message', onMessage)
+      }, [sessionId, run.runId, run.epicName])
+      if (!run.epicName) return h('div', { className: 'hmzf-pad hmzf-desc' }, t('view.noEpic'))
+      return h('iframe', {
+        ref: frame,
+        className: 'hmzf-native',
+        title: `hmz · ${run.flow} #${run.run ?? '?'}`,
+        sandbox: 'allow-scripts',
+        referrerPolicy: 'no-referrer',
+        'data-hmz-flow': 'native',
+        'data-hmz-run': run.runId,
+        src: `hmzf-viewer/index.html#/epics/${encodeURIComponent(run.epicName)}`,
+      })
+    }
+
+    /**
+     * One session's Flow page: this session's runs, and hmz's own view of the
+     * one selected. Mounted per DSH session (keyed by sessionId); each run's
+     * viewer is its own iframe (keyed by run id), so nothing of one run or
+     * session can be drawn into another.
      */
     function SessionFlow({ t, sessionId }) {
       const one = useSessionEntry(sessionId)
       const [list, setList] = React.useState(null)
       const [listError, setListError] = React.useState(null)
       const [runId, setRunId] = React.useState(null)
-      const [tree, setTree] = React.useState(null)
-      const [treeError, setTreeError] = React.useState(null)
-      const [sessionKey, setSessionKey] = React.useState(null)
-      const [detail, setDetail] = React.useState(null)
-      const [detailError, setDetailError] = React.useState(null)
-      const [collapsed, setCollapsed] = React.useState({})
-      const want = React.useRef({ runId: null, sessionKey: null })
-      // In flight, per kind: the key of the request under way (null when none). A
-      // request for a new selection is never blocked by one for an old selection;
-      // only a duplicate for the same key is skipped, and stale answers are dropped.
-      const busy = React.useRef({ list: false, tree: null, detail: null })
-
-      const selectRun = (id) => {
-        want.current = { runId: id, sessionKey: null }
-        setRunId(id); setTree(null); setTreeError(null); setSessionKey(null); setDetail(null); setDetailError(null)
-      }
-      const selectSession = (key) => {
-        want.current = { runId: want.current.runId, sessionKey: key }
-        setSessionKey(key); setDetail(null); setDetailError(null)
-      }
-
-      const loadList = React.useCallback(async () => {
-        if (busy.current.list) return
-        busy.current.list = true
+      const [note, setNote] = React.useState('')
+      const busy = React.useRef(false)
+      const load = React.useCallback(async () => {
+        if (busy.current) return
+        busy.current = true
         try {
           const got = await rpc('runs', sessionId)
           setList(got); setListError(null)
-          if (want.current.runId === null && got.runs.length) {
-            selectRun(got.currentRunId && got.runs.some((r) => r.runId === got.currentRunId) ? got.currentRunId : got.runs[0].runId)
-          }
-        } catch (error) { setListError(error.message) } finally { busy.current.list = false }
+          setRunId((cur) => cur && got.runs.some((r) => r.runId === cur) ? cur
+            : (got.currentRunId && got.runs.some((r) => r.runId === got.currentRunId) ? got.currentRunId : (got.runs[0] ? got.runs[0].runId : null)))
+        } catch (error) { setListError(error.message) } finally { busy.current = false }
       }, [sessionId])
-
-      const loadTree = React.useCallback(async () => {
-        const forRun = want.current.runId
-        if (!forRun || busy.current.tree === forRun) return
-        busy.current.tree = forRun
-        try {
-          const got = await rpc('runTree', sessionId, { runId: forRun })
-          if (want.current.runId !== forRun) return
-          setTree(got); setTreeError(null)
-          if (want.current.sessionKey === null) {
-            const keys = (got.agents || []).flatMap((a) => (a.sessions || []).map((s) => ({ key: s.key, at: s.at || '' })))
-            keys.sort((x, y) => (x.at < y.at ? 1 : -1))
-            if (keys.length) selectSession(keys[0].key)
-          }
-        } catch (error) {
-          if (want.current.runId === forRun) setTreeError(error.message)
-        } finally { if (busy.current.tree === forRun) busy.current.tree = null }
-      }, [sessionId])
-
-      const loadDetail = React.useCallback(async (before) => {
-        const forRun = want.current.runId
-        const forKey = want.current.sessionKey
-        const flight = `${forRun}\u0000${forKey}\u0000${before ?? ''}`
-        if (!forRun || !forKey || busy.current.detail === flight) return
-        busy.current.detail = flight
-        try {
-          const got = await rpc('runSession', sessionId, { runId: forRun, sessionKey: forKey, ...(before !== undefined ? { before } : {}) })
-          if (want.current.runId !== forRun || want.current.sessionKey !== forKey) return
-          setDetail((prev) => {
-            if (!prev || prev.session !== got.session) return got
-            if (before !== undefined) return { ...got, actions: [...got.actions, ...prev.actions], to: prev.to }
-            // A refresh of the newest page keeps older pages already loaded.
-            if (prev.from < got.from) {
-              return { ...got, from: prev.from, more: prev.more, actions: [...prev.actions.filter((a) => a.i < got.from), ...got.actions] }
-            }
-            return got
-          })
-          setDetailError(null)
-        } catch (error) {
-          if (want.current.runId === forRun && want.current.sessionKey === forKey) setDetailError(error.message)
-        } finally { if (busy.current.detail === flight) busy.current.detail = null }
-      }, [sessionId])
-
       React.useEffect(() => {
-        void loadList()
-        const timer = setInterval(() => { void loadList() }, 4000)
+        void load()
+        const timer = setInterval(() => { void load() }, 4000)
         return () => clearInterval(timer)
-      }, [loadList])
-      const selectedRun = list && runId ? list.runs.find((r) => r.runId === runId) : null
-      const live = !!selectedRun && ACTIVE.has(selectedRun.phase)
-      React.useEffect(() => {
-        if (!runId) return undefined
-        void loadTree()
-        if (!live) return undefined
-        const timer = setInterval(() => { void loadTree() }, 8000)
-        return () => clearInterval(timer)
-      }, [runId, live, loadTree])
-      React.useEffect(() => {
-        if (!runId || !sessionKey) return undefined
-        void loadDetail()
-        if (!live) return undefined
-        // Live runs: refresh the newest page; an expanded older history is kept.
-        const timer = setInterval(() => { void loadDetail() }, 6000)
-        return () => clearInterval(timer)
-      }, [runId, sessionKey, live, loadDetail])
-
+      }, [load])
       const flow = one.selection && one.selection.flow
       if (list === null) {
         return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view' }, h(Style),
           h('div', { className: 'hmzf-pad hmzf-desc' }, listError ? h('span', { className: 'hmzf-error' }, listError) : t('view.loading')))
       }
+      const failed = list.lastAutoStart
       if (!list.runs.length) {
         return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view', 'data-hmz-state': 'empty' }, h(Style),
           h('div', { className: 'hmzf-empty' },
             h('div', { className: 'hmzf-empty-title' }, t('view.empty')),
             h('div', { className: 'hmzf-desc' }, flow ? fmt(t('view.emptySelected'), { flow }) : t('view.emptyHint')),
+            failed ? h('div', { className: 'hmzf-error', 'data-hmz-flow': 'autostart-error' }, fmt(t('view.autoFailed'), { why: failed.error, outcome: failed.outcome })) : null,
             h('div', { className: 'hmzf-desc' }, t('view.scope'))))
       }
+      const selected = list.runs.find((r) => r.runId === runId) || list.runs[0]
       const current = list.runs.find((r) => r.current)
       const pending = list.pending || []
-      return h('div', { className: 'hmzf-view hmzf-split', 'data-hmz-flow': 'view', 'data-hmz-state': 'runs' }, h(Style),
-        h('aside', { className: 'hmzf-nav' },
-          h('div', { className: 'hmzf-sec' }, t('view.runs')),
+      async function stop(run) {
+        if (!window.confirm(t('stop.confirm'))) return
+        setNote('')
+        try { await rpc('stopRun', sessionId, { runId: run.runId, identity: run.identity }); await load() } catch (e) { setNote(`${t('panel.error')}: ${e.message}`) }
+      }
+      return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view', 'data-hmz-state': 'runs' }, h(Style),
+        h('div', { className: 'hmzf-runbar', 'data-hmz-flow': 'runbar' },
           list.runs.map((r) => h('button', {
-            key: r.runId, type: 'button', className: `hmzf-run${r.runId === runId ? ' hmzf-sel' : ''}`,
-            'data-hmz-run': r.runId, 'data-hmz-phase': r.phase, onClick: () => selectRun(r.runId),
-          },
-          h('div', null, `${r.flow} · #${r.run ?? '?'}${r.current ? ` · ${t('view.current')}` : ''}`),
-          h('div', { className: 'hmzf-desc' }, `${phaseLabel(t, r, r.current ? pending : [])}${r.startedAt || r.requestedAt ? ` · ${(r.startedAt || r.requestedAt).slice(11, 19)}` : ''}`))),
-          tree && tree.agents ? h('div', { 'data-hmz-flow': 'tree' },
-            h('div', { className: 'hmzf-sec' }, t('view.agents')),
-            tree.agents.map((a) => {
-              const open = !collapsed[a.agent]
-              return h('div', { key: a.agent, className: 'hmzf-agent', 'data-hmz-agent': a.agent },
-                h('button', { type: 'button', className: 'hmzf-agent-head', onClick: () => setCollapsed((c) => ({ ...c, [a.agent]: open })) },
-                  `${open ? '▾' : '▸'} ${a.role ? `${a.role} · ` : ''}${a.agent}`),
-                open ? (a.sessions.length ? a.sessions.map((sn, i) => h('button', {
-                  key: sn.key, type: 'button', className: `hmzf-session${sn.key === sessionKey ? ' hmzf-sel' : ''}`,
-                  'data-hmz-session': sn.key, onClick: () => selectSession(sn.key),
-                }, `${a.agent}/${i + 1} · ${sn.backend}${sn.at ? ` · ${sn.at.slice(11, 19)}` : ''}`))
-                  : h('div', { className: 'hmzf-desc hmzf-indent' }, t('view.noSessions'))) : null)
-            })) : null,
-          treeError ? h('div', { className: 'hmzf-error' }, treeError) : null),
-        h('section', { className: 'hmzf-main' },
-          selectedRun && current && selectedRun.runId !== current.runId
-            ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'history-note' }, fmt(t('view.history'), { current: ` #${current.run ?? '?'}` })) : null,
-          selectedRun && selectedRun.current && pending.length
-            ? pending.map((q) => h('div', { key: q.question, className: 'hmzf-note', 'data-hmz-flow': 'pending' }, fmt(t('view.waiting'), { text: q.text }))) : null,
-          selectedRun ? h('div', { className: 'hmzf-runhead', 'data-hmz-flow': 'run-head' },
-            h('strong', null, `${selectedRun.flow} · #${selectedRun.run ?? '?'}`), ' · ',
-            h('span', { 'data-hmz-flow': 'phase' }, phaseLabel(t, selectedRun, selectedRun.current ? pending : [])),
-            selectedRun.epicName ? h('span', { className: 'hmzf-desc' }, ` · ${selectedRun.epicName}`) : null,
-            h('button', { type: 'button', className: 'hmzf-link', onClick: () => { void loadTree(); void loadDetail() } }, t('view.refresh'))) : null,
-          tree && tree.epic ? h('details', { className: 'hmzf-task' }, h('summary', null, t('view.task')), h('pre', null, tree.epic.task)) : null,
-          tree && tree.pendingEpic ? h('div', { className: 'hmzf-desc' }, t('view.noEpic')) : null,
-          !sessionKey ? (tree && !tree.pendingEpic ? h('div', { className: 'hmzf-desc' }, t('view.pickSession')) : null)
-            : h('div', { 'data-hmz-flow': 'detail', 'data-hmz-detail-for': `${runId}|${sessionKey}` },
-              detailError ? h('div', { className: 'hmzf-error' }, detailError) : null,
-              !detail ? h('div', { className: 'hmzf-desc' }, t('view.loading'))
-                : !detail.actions.length ? h('div', { className: 'hmzf-desc' }, t('view.noOutput'))
-                  : h(React.Fragment, null,
-                    detail.more ? h('button', { type: 'button', className: 'hmzf-link', onClick: () => { void loadDetail(detail.from) } }, fmt(t('view.older'), { n: detail.from })) : null,
-                    detail.actions.map((a) => h(ActionRow, { key: a.i, a, t })))),
-        ))
-    }
-
-    function ActionRow({ a, t }) {
-      const cut = (n) => (n ? ` ${fmt(t('view.cut'), { n })}` : '')
-      const label = t(`cat.${a.category}`) || a.category
-      const open = a.category === 'message'
-      return h('div', { className: `hmzf-act hmzf-${a.category}${a.error ? ' hmzf-act-error' : ''}`, 'data-hmz-action': a.category },
-        h('details', { open },
-          h('summary', null, h('span', { className: 'hmzf-tag' }, label), ' ', a.title || '', a.at ? h('span', { className: 'hmzf-desc' }, ` ${String(a.at).slice(11, 19)}`) : null),
-          a.text ? h('pre', null, `${a.text}${cut(a.textCut)}`) : null,
-          a.category === 'tool' ? h(React.Fragment, null,
-            a.input ? h('pre', { className: 'hmzf-in' }, `${a.input}${cut(a.inputCut)}`) : null,
-            h('pre', { className: 'hmzf-out' }, a.output ? `${a.output}${cut(a.outputCut)}` : t('view.toolNoOutput'))) : null))
+            key: r.runId, type: 'button', className: `hmzf-chip${r.runId === selected.runId ? ' hmzf-sel' : ''}`,
+            'data-hmz-run': r.runId, 'data-hmz-phase': r.phase, onClick: () => setRunId(r.runId),
+          }, `${r.flow} #${r.run ?? '?'} · ${phaseLabel(t, r, r.current ? pending : [])}${r.current ? ` · ${t('view.current')}` : ''}`)),
+          h('span', { className: 'hmzf-grow' }),
+          selected.current && selected.phase === 'running'
+            ? h('button', { type: 'button', className: 'hmzf-stop', 'data-hmz-flow': 'stop', onClick: () => { void stop(selected) } }, t('stop.button')) : null,
+          selected.current && selected.phase === 'stopping'
+            ? h('button', { type: 'button', className: 'hmzf-stop', disabled: true, 'data-hmz-flow': 'stop' }, t('stop.stopping')) : null),
+        note ? h('div', { className: 'hmzf-error hmzf-pad' }, note) : null,
+        failed ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'autostart-error' }, fmt(t('view.autoFailed'), { why: failed.error, outcome: failed.outcome })) : null,
+        current && selected.runId !== current.runId
+          ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'history-note' }, fmt(t('view.history'), { current: ` #${current.run ?? '?'}` })) : null,
+        selected.current && pending.length
+          ? pending.map((q) => h('div', { key: q.question, className: 'hmzf-note', 'data-hmz-flow': 'pending' }, fmt(t('view.waiting'), { text: q.text }))) : null,
+        h(NativeFrame, { key: selected.runId, t, sessionId, run: selected }))
     }
 
     function makeView(t) {
@@ -852,6 +842,21 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
           },
           async onSelect(option, session) {
             await chooseFlow(session.sessionId, option.id === OFF ? null : option.id)
+            // Choosing a flow edits nothing in the draft. The shell would consume the
+            // span it captured at open, which from ＋ is the user's selection; closing
+            // the popup ourselves (public dismiss) revokes that, so the draft stays.
+            const commandUi = ctx.get('commandUi')
+            if (commandUi && typeof commandUi.dismiss === 'function') commandUi.dismiss('flow')
+            // A typed `/flow` (or `/fl…` picked from the menu) that is the whole draft is
+            // removed with the public bare-token guard, which touches nothing else.
+            const actx = ctx.sessions && ctx.sessions.scope ? ctx.sessions.scope(session.sessionId) : undefined
+            const conversation = actx && actx.get('conversation')
+            const draft = conversation && conversation.input && typeof conversation.input.for === 'function'
+              ? conversation.input.for(actx).state.getSnapshot().draft : ''
+            const token = String(draft || '').trim()
+            if (actx && /^\/[A-Za-z_-]*$/.test(token) && 'flow'.startsWith(token.slice(1))) {
+              actx.bail(actx, 'slash/input-consume-token', { guard: { kind: 'bare-token', token } })
+            }
           },
         },
       }

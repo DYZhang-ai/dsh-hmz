@@ -12,7 +12,7 @@
 
 export const HISTORY_LIMITS = Object.freeze({ maxChars: 12000, perMessageChars: 2000, maxMessages: 40 })
 
-const USER_SOURCES = new Set(['user', 'user-rpc'])
+export const USER_SOURCES = new Set(['user', 'user-rpc'])
 
 function textOf(content) {
   if (!Array.isArray(content)) return ''
@@ -27,13 +27,14 @@ function textOf(content) {
  * The visible user/assistant messages of a session event list, oldest first.
  * @param {readonly any[]} events session events ({type, data})
  */
-export function visibleMessages(events) {
+export function visibleMessages(events, excludeIds = new Set()) {
   const out = []
   for (const event of events ?? []) {
     if (!event || typeof event !== 'object') continue
     if (event.type === 'user/message') {
       const message = event.data
       if (!message || message.role !== 'user' || !USER_SOURCES.has(message.source?.kind)) continue
+      if (excludeIds.has(message.id)) continue
       const text = textOf(message.content)
       if (text) out.push({ role: 'user', text })
     } else if (event.type === 'assistant/message') {
@@ -54,7 +55,8 @@ export function visibleMessages(events) {
 export function historySnapshot(events, options = {}) {
   const limits = { ...HISTORY_LIMITS, ...options.limits }
   const cutoff = (options.now ?? new Date()).toISOString()
-  const all = visibleMessages(events)
+  // The messages that are the task itself are not repeated as background.
+  const all = visibleMessages(events, new Set(options.excludeIds ?? []))
   const kept = []
   let used = 0
   let clipped = 0

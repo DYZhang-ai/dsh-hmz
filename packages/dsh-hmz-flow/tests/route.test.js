@@ -23,7 +23,7 @@ async function harness() {
     workingDirectory: { get: () => dir },
     tools: { register: () => () => {}, guard: () => () => {} },
     connection: { fetch: { register: (r) => { route = r; return () => {} } } },
-    webServer: { port: 1 },
+    webServer: { port: 1, register: () => () => {} },
     effect(fn) { const d = fn(); if (typeof d === 'function') disposers.push(d); return d },
     on() {},
     get: () => undefined,

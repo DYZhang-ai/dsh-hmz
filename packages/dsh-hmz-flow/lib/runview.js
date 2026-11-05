@@ -24,6 +24,8 @@ export function runSummary(run, currentRunId) {
     epicName: run.epicName ?? '',
     names: run.names ?? {},
     requestedAt: run.requestedAt ?? '',
+    // What a Stop click names: the exact run it was shown for.
+    identity: { hostPid: run.hostPid ?? null, hostStarted: run.hostStarted ?? null, run: run.run ?? null, epic: run.epic ?? '' },
     startedAt: run.startedAt ?? '',
     endedAt: run.endedAt ?? '',
     endedHow: run.endedHow ?? '',
@@ -52,9 +54,11 @@ export class RunView {
     const currentRunId = current?.requestId ?? null
     const runs = store.runsOf(sessionId).map((run) => runSummary(run, currentRunId)).reverse()
     const observed = this.deps.lastObserved?.(sessionId)
+    const entry = store.entry(sessionId)
     return {
       currentRunId,
       runs,
+      lastAutoStart: entry && entry.lastAutoStart && !entry.lastAutoStart.ok ? entry.lastAutoStart : null,
       // Questions hmz waits on for the current run, as last observed (no new hmz call).
       pending: observed && observed.runId === currentRunId ? observed.pending ?? [] : [],
     }
@@ -66,6 +70,14 @@ export class RunView {
     const run = this.deps.store.run(sessionId, runId)
     if (!run) throw new MaskError('no such run in this DSH session')
     return run
+  }
+
+  /** One of hmz web's own reads (detail / trace) for one run of this session. */
+  async native(sessionId, runId, op) {
+    if (op !== 'web_detail' && op !== 'web_trace') throw new MaskError('not a viewer read')
+    const run = this.resolve(sessionId, runId)
+    if (!run.epic) throw new MaskError('the run has no epic yet')
+    return this.deps.adapter.request(op, { workspace: run.workspace, epic: run.epic })
   }
 
   async tree(sessionId, runId) {

@@ -97,7 +97,11 @@ def op_ping(_args: dict[str, Any]) -> dict[str, Any]:
         hmz_version = version("hmz")
     except Exception:  # noqa: BLE001
         hmz_version = "unknown"
-    return {"hmz": hmz_version, "protocol": PROTOCOL, "pid": os.getpid()}
+    import hmz.web
+
+    # Where hmz's own web front end is installed: the Flow page loads its modules from here.
+    static = Path(hmz.web.__file__).resolve().parent / "static"
+    return {"hmz": hmz_version, "protocol": PROTOCOL, "pid": os.getpid(), "static": str(static)}
 
 
 def op_flows(args: dict[str, Any]) -> dict[str, Any]:
@@ -561,6 +565,35 @@ def op_epic_session(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def op_web_detail(args: dict[str, Any]) -> dict[str, Any]:
+    """One run, exactly as hmz web's own `GET /api/runs/<name>` answers it.
+
+    Built by hmz's own `hmz.web.runs.detail` and `calls`, so the native epic view
+    reads its own shape. Answered as written down (`held: false`): the native
+    view then polls this every few seconds instead of following a host stream.
+    """
+    from hmz.sdk import Hmz
+    from hmz.web.runs import calls, detail
+
+    workspace = _workspace(args)
+    epic = _own_epic(workspace, args.get("epic"))
+    epics = Hmz(workspace).epics
+    ran = epics.read(epic)
+    if ran is None:
+        raise Refused("the run has no record yet")
+    going = not ran.how and epics.going(epic)
+    return detail(
+        ran, held=False, picks_up=epics.picks_up(epic), foreign=epics.foreign(epic), going=going,
+    ) | {"calls": calls(epics.tree(epic))}
+
+
+def op_web_trace(args: dict[str, Any]) -> dict[str, Any]:
+    """One run's sessions, as hmz web's own `GET /api/runs/<name>/trace` answers it (cached)."""
+    workspace = _workspace(args)
+    epic = _own_epic(workspace, args.get("epic"))
+    return {"sessions": _transcripts(workspace, epic)}
+
+
 # --------------------------------------------------------------------- actions
 
 
@@ -744,6 +777,8 @@ OPS = {
     "observe": op_observe,
     "find_request": op_find_request,
     "epic_tree": op_epic_tree,
+    "web_detail": op_web_detail,
+    "web_trace": op_web_trace,
     "epic_session": op_epic_session,
     "start": op_start,
     "say": op_say,

@@ -40,6 +40,21 @@ export function protectedCallReason(exec, allowed = READ_ONLY_TOOLS) {
   return `"${exec.name}" is blocked while an hmz flow owns this directory: the flow edits code, the DSH leader only reads, talks and steers it (hmz_flow_send / hmz_flow_stop)`
 }
 
+/**
+ * Flow mode with no active run of the session: the same read/talk/control
+ * allowlist, plus an explicit start (`hmz_flow_start`, which itself refuses a
+ * call from inside run_code). Writing, shells, delegation and run_code stay
+ * blocked, so a task that failed to start is not done by the leader instead.
+ * @param {{name: string, parent?: unknown}} exec
+ */
+export function flowModeCallReason(exec, allowed = READ_ONLY_TOOLS) {
+  if (exec.name === 'hmz_flow_start' || allowed.has(exec.name)) return undefined
+  if (exec.name === 'run_code' && exec.parent === undefined) {
+    return 'run_code is unavailable in flow mode; tasks go to the selected hmz flow (leave flow mode to work directly)'
+  }
+  return `"${exec.name}" is blocked in flow mode: tasks go to the selected hmz flow, not to the leader. Leave flow mode (＋ → Flow → 取消 flow 模式) to work directly.`
+}
+
 /** Live tool bodies, tracked from the around-dispatch waterfall. */
 export class InFlight {
   constructor() { this.calls = new Map() }

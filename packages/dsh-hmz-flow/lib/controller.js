@@ -152,6 +152,10 @@ export class FlowController {
   start(sessionId, request) {
     return this.serial(sessionId, async () => {
       const { store, adapter } = this.deps
+      // A start asked for by a step that has since been cancelled is not sent:
+      // checked here, after waiting for earlier commands, before anything is
+      // persisted or sent. Once hmz has it, cancelling the leader does not stop it.
+      if (request.signal?.aborted) throw new FlowError('not started: the request was cancelled before it was sent')
       const current = store.binding(sessionId)
       if (current && ACTIVE.has(current.phase)) {
         throw new FlowError(`this session already has hmz run #${current.run ?? '?'} (${current.phase}); check it with hmz_flow_status or stop it first`)
@@ -167,6 +171,7 @@ export class FlowController {
         if (busy.length) {
           throw new FlowError(`not started: earlier work of this session is still running (${busy.join('; ')}). Let it finish or stop it yourself, then ask again; nothing was killed.`)
         }
+        if (request.signal?.aborted) throw new FlowError('not started: the request was cancelled before it was sent')
         const { task, history } = request.composeTask(request.task)
         const requestId = randomUUID()
         const intent = {
@@ -260,9 +265,18 @@ export class FlowController {
     })
   }
 
-  stop(sessionId) {
+  /**
+   * @param {string} sessionId
+   * @param {{expect?: object}} [request] `expect`: the identity of the run the user
+   *   clicked Stop for (from the Flow page). A click made for a run that is no
+   *   longer this session's current run is refused, never applied to the new one.
+   */
+  stop(sessionId, { expect } = {}) {
     return this.serial(sessionId, async () => {
       const binding = this.activeBinding(sessionId, ['running', 'stopping'])
+      if (expect !== undefined && !this.sameRun(this.identityOf(binding), expect)) {
+        throw new FlowError(`Stop was clicked for run #${expect?.run ?? '?'}, but this session's current run is #${binding.run ?? '?'}; nothing was stopped`)
+      }
       if (binding.phase === 'stopping') return { accepted: true, already: 'stopping' }
       try {
         const result = await this.deps.adapter.request('stop', { workspace: binding.workspace, expect: this.expectOf(binding) })
