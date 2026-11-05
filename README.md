@@ -3,7 +3,7 @@
 外部 DSH 插件 `@dsh-hmz/flow`（`packages/dsh-hmz-flow`）：在 DSH 里选择 hmz flow，用户的任务在 hmz 里执行，DSH 入口 Agent 继续担任 leader / 秘书。
 
 **hmz 和已安装 DSH 的源码都没有修改。** 插件只使用两类公开接口：
-- DSH 公开插件接口：`tools.guard`、`agent/pre-step`、`agent.followup`、`connection.fetch`、`webServer`、`slots`、`inputTriggers`、`commandUi`、`userQuestions`、`llm.listModels`；
+- DSH 公开插件接口：`tools.guard`、`agent.followup`、`connection.fetch`、`webServer`、`slots`、`inputTriggers`、`commandUi`、`userQuestions`、`llm.listModels`；
 - hmz 公开 SDK：`hmz.sdk.Hmz`、`Daemons`、`Link`。
 
 此外，Flow 页直接加载 hmz 安装自带的 Web 前端模块来渲染。
@@ -20,22 +20,22 @@
    - 当 CLI 是 `dsh` 时，模型候选来自当前 DSH 官方目录 `ctx.llm.listModels('deepseek-official')`，因为 hmz 自带的静态列表可能过时（例如 `deepseek-v4-flash`，而当前 DSH 的 id 是 `deepseek-flash`）。
      - 该角色模型为空时，默认填入这个目录的第一个模型。
      - 已保存的自定义模型不会被替换；如果它不在这个目录里，只给出一条提示。自定义 endpoint 的账号仍然可能可用这个模型。
-3. **普通任务直接进入 flow**：选中 flow 并且本会话没有正在运行的任务时，用户发出的下一条普通消息会被确定性地启动为 flow 任务，不需要提 hmz 或工具名。
-   - 实现：一个 `agent/pre-step` waterfall 监听器，在 leader 的这一步进入模型之前调用 `controller.start`，然后给 leader 附上一条 `[hmz flow notice]`（附带的是这条通知，不是用户指令）。
-   - 只有真实用户消息（`source.kind` 为 `user` / `user-rpc`）才会触发；插件通知、问答回复、运行时上下文都不会。
-   - 每条消息 id 先持久化，最多启动一次，重放或刷新都不会再次启动。
-   - 只用新出现的消息组成任务；成功会清掉上一次的失败记录。
-   - 在发出启动请求之前，会在多个检查点确认没有被取消：等完前一个 waterfall 之后、读完 flow 声明之后、进入 controller 的串行队列之后。被取消就不启动，并释放这些消息 id。
-   - hmz 已经接受的任务，不会因为 leader 的回复被取消而停止。
-   - 启动被拒绝或结果未知时，Flow 页和 leader 都能看到原因，并且**写操作在 flow 模式下仍然被拦截**，leader 不会自己把这个任务做掉（`hmz_flow_start` 只用于用户明确要求的重试）。
+3. **秘书决定是否交给 flow**：选中 flow 只表示秘书（DSH 入口 leader）可以使用这个流程，并不意味着每条消息都授权执行。
+   - 用户消息总是先到秘书。秘书根据意图处理：
+     - 讨论或提问：直接回答；
+     - 用户要做的工作适合这个 flow：调用 `hmz_flow_start` 启动（不额外要求确认）；
+     - 目标或接收者确实不清楚：简短澄清。
+   - 插件不会自动启动 flow，也不会机械地转发消息。早先的 `agent/pre-step` 自动启动已移除；持久文件里旧的 `autoStarted` / `lastAutoStart` 字段保留但不再使用，页面也不再显示。
+   - `hmz_flow_start` 走 controller 的串行启动，并带有启动前检查和写入 fence。工具调用的 `exec.signal` 在发出启动请求之前被取消时（读 flow 声明之后、进入串行队列之后都会检查），不启动任何东西；hmz 已经接受的任务，不会因为 leader 的回复被取消而停止。
+   - 启动被拒绝或结果未知时，工具结果会如实说明（被拒绝、结果未知、已接受但未记录），由秘书转告用户。
 4. **运行中**：
-   - 消息仍然发给 leader，由它通过 `hmz_flow_send` 按角色或 Agent 转达，不会为每条消息开一个新 run。
+   - 消息仍然先到秘书：用户要交给 flow 的指令、修正或补充需求，由它通过 `hmz_flow_send` 转达给正确的角色或 Agent（精确的 run 身份，不发空目标）；它自己能回答的问题、进度询问、闲聊都不转发，也不会为每条消息开一个新 run。
    - hmz 向人提的问题经 `hmz_flow_answer` 用 DSH 问答卡交给真实用户回答。
    - 问进度只做查询。
 5. **停止 flow**：Flow 页顶栏和 flow选项 面板里都有 **停止 flow** 按钮，与停止 leader 回复是两件事。
    - 点击时带上该 run 的精确身份（host pid、host 启动时间、run 号、epic），Host 会和本会话当前的 run 核对；查看历史 run 时不会误停新的 run。
    - 停止请求被接受后显示“正在停止…”并禁止重复点击；只有观测确认已结束才显示 ended 并解除保护。
-6. **取消 flow 模式**：＋ / `/` → Flow → 取消 flow 模式，回到普通 DSH。
+6. **取消 flow 选择**：＋ / `/` → Flow → 取消 flow 模式，回到普通 DSH。已在运行的任务不受影响。
 
 ## Flow 页：hmz 原生渲染，只显示本会话的任务
 
@@ -65,11 +65,9 @@
 
 ## 写保护、生命周期与限制
 
-- **写保护的两层**：
-  - **flow 模式**（已选 flow、没有活跃 run）：本会话及其子代理只能调用读取 / 沟通 / 控制类工具，外加 `hmz_flow_start`。
-  - **活跃 run 期间**（starting / running / stopping / unknown）：只能调用读取 / 沟通 / 控制类工具。
-  - 两层都由 `ctx.tools.guard` 在真实 dispatch 时执行，使用白名单（`lib/policy.js`）。
-  - 选中 flow 后，leader 的工具改为原生呈现（`presentAs('native')`）。模型直接调用的 `run_code` 会被拒绝；从 `run_code` 内部调用启动也会被拒绝。
+- **写保护**：只在本会话的 run 处于 starting / running / stopping / unknown 时（以及启动 fence 期间）生效：本会话及其子代理只能调用读取 / 沟通 / 控制类工具。由 `ctx.tools.guard` 在真实 dispatch 时执行，使用白名单（`lib/policy.js`）。
+  - 只选了 flow、还没有活跃 run 时，不加任何写限制，秘书照常工作。早先为强制启动加的 flow 模式写 fence 已移除。
+  - 选中 flow 后，leader 的工具改为原生呈现（`presentAs('native')`），秘书可以直接调用启动和控制工具。模型直接调用的 `run_code` 在保护期间会被拒绝；从 `run_code` 内部调用启动也会被拒绝。
 - **启动前检查**：先挡住新的写入，再检查本会话树上仍在运行的子代理、后台作业和执行中的工具（只排除当前这次调用）；有任何一项在运行就拒绝启动，不终止任何东西。
 - **启动和停止的记录**：
   - 启动意图先持久化再发出。结果未知时进入 `unknown`，不重发，只按 requestId 只读对账。
@@ -103,7 +101,7 @@ PREVIEW_DIR=$PWD/.preview-test PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 \
 ## 测试（在仓库根目录执行；hmz 的 python 路径含空格，请加引号）
 
 ```bash
-(cd packages/dsh-hmz-flow && npm test)          # 58 个 Node 行为测试
+(cd packages/dsh-hmz-flow && npm test)          # 60 个 Node 行为测试
 PY="/root/artifacts/hmz-installed-dsh-20261104/test install/venv/bin/python"
 ADAPTER=packages/dsh-hmz-flow/adapter/hmz_adapter.py
 "$PY" -I packages/dsh-hmz-flow/tests/adapter_start_unit.py "$ADAPTER"
@@ -118,18 +116,19 @@ PW=/root/src/humanize-installed-dsh/.venv/bin/python
 # 真实 SDK 控制测试（会运行模型；拒绝 Claude）：tests/e2e/adapter_actions.py
 ```
 
-`tests/e2e/verify_flow.py` 保留了旧版验收过程，其中“保存后面板仍打开”和显式要求 leader 启动的步骤已不适用，不能作为当前普通消息自动启动的验收。当前真实浏览器验收见下方主审证据。
+`tests/e2e/verify_flow.py` 是旧版验收过程（里面“保存后面板仍打开”等步骤已不适用），只作历史参考。当前真实浏览器验收见下方主审证据。
 
 Node 测试覆盖：
 - 状态与迁移；会话范围限定 / 路由 403；控制器；策略；选项；消息；适配器客户端；
-- 自动启动：只用新消息、来源过滤、取消、拒绝后写保护、成功后清除错误；
+- 秘书语义：选中 flow 不会触发任何启动，也不会锁写；显式 `hmz_flow_start` 经 fence 和 SDK 成功，且只启动一次；工具调用被取消时不启动；被拒绝时没有保护、没有 run；运行期间写保护有效；转发使用精确的 run 身份；旧的自动启动记录不影响手动启动和页面；
 - 停止身份校验；viewer 路由白名单与 CSP；补丁能应用到已安装的 hmz，版本不匹配时整体跳过。
 
 **主审独立验收证据**（`/root/src/dsh-hmz/work-review/20261105/`）：
 
 | 证据文件 | 内容 |
 |---|---|
-| `review-ordinary-native-result.json` | 真实 DeepSeek rlar：普通任务自动启动且只有 1 个 run；原生 Graph 和右侧面板正常，没有全局侧栏 |
+| `review-secretary-routing-result.json` | **当前语义**，真实 DeepSeek：选中 rlar 后先讨论，既不启动也不转发；用户用自然语言要求交给所选流程后，leader 调用 `hmz_flow_start`（仅 1 次），actor / reviewer 完成任务；结束后的讨论不新增 run、不转发 |
+| `review-ordinary-native-result.json` | **历史证据**（已移除的“普通消息自动启动”语义，不代表当前行为）。其中原生 Graph 和右侧面板、没有全局侧栏的部分仍然有效 |
 | `review-stop-real-result.json` | 真实 chat：停止 → stopping → SDK 确认 ended |
 | `review-native-fixture-result.json` | detail 固定、trace 新增消息时实时出现；不再 active 后停止读取；原生输入框已隐藏 |
 | `review-native-scope-result.json` | 跨会话的 viewDetail / viewTrace / stop 都被 403；`_dshFlow` 取自 binding；重启后是同一个 run |

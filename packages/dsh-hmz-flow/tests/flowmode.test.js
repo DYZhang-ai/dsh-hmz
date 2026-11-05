@@ -11,31 +11,39 @@ import { patchEpicView, MARK } from '../lib/viewer-patches.js'
 import { viewerHandler, VIEWER_PATH } from '../lib/viewer-route.js'
 
 const SID = 'session-auto'
-const user = (id, text, kind = 'user-rpc') => ({ id, role: 'user', content: [{ type: 'text', text }], source: { kind } })
 
-async function harness({ start, selection = { flow: 'chat' } } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'hmzflow-auto-'))
+async function harness({ start, selection = { flow: 'chat' }, legacy = false, onFlow } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'hmzflow-sec-'))
   const store = new StateStore(dir)
   if (selection.flow) {
     store.setSelection(SID, selection)
     store.setOptions(SID, 'chat', { agents: { assistant: 'dsh@acct/deepseek-flash' } })
+  }
+  if (legacy) {
+    // Records left by the earlier automatic-start version: unused now.
+    store.update(SID, (entry) => {
+      entry.autoStarted = ['old-message-1', 'old-message-2']
+      entry.lastAutoStart = { at: '2026-11-05T00:00:00Z', ok: false, outcome: 'not started', error: 'workspace is busy' }
+    })
   }
   const calls = []
   const original = AdapterClient.prototype.request
   let n = 0
   AdapterClient.prototype.request = async function (op, args) {
     calls.push({ op, args })
-    if (op === 'flow') return { name: 'chat', agents: [{ name: 'assistant', required: true, auto: false }], envs: [] }
+    if (op === 'flow') { onFlow?.(); return { name: 'chat', agents: [{ name: 'assistant', required: true, auto: false }], envs: [] } }
     if (op === 'start') {
       if (start) return start(args)
       n += 1
       return { binding: { hostPid: 1, hostStarted: 'T', run: n, epic: `E${n}`, epicName: `E${n}`, flow: 'chat', names: { assistant: 'A' } } }
     }
+    if (op === 'say') return { accepted: true, to: 'A', role: 'assistant', run: args.expect.run, targetWorking: false }
     if (op === 'stop') return { accepted: true }
     return {}
   }
   const agent = { id: SID, status: 'running', session: { snapshotEvents: () => [] }, ctx: { tools: { presentAs: () => () => {} } }, followup() {} }
   const events = new Map()
+  const tools = new Map()
   let guard
   let route
   const disposers = []
@@ -43,7 +51,7 @@ async function harness({ start, selection = { flow: 'chat' } } = {}) {
     logger: () => ({ warn() {}, info() {} }),
     agents: { get: (id) => (id === SID ? agent : undefined), roots: () => [agent], list: () => [agent], isOwnedBy: () => false },
     workingDirectory: { get: () => dir },
-    tools: { register: () => () => {}, guard: (fn) => { guard = fn; return () => {} } },
+    tools: { register: (def) => { tools.set(def.name, def); return () => {} }, guard: (fn) => { guard = fn; return () => {} } },
     connection: { fetch: { register: (r) => { route = r; return () => {} } } },
     webServer: { port: 1, register: () => () => {} },
     effect(fn) { const d = fn(); if (typeof d === 'function') disposers.push(d); return d },
@@ -51,81 +59,100 @@ async function harness({ start, selection = { flow: 'chat' } } = {}) {
     get: () => undefined,
   }
   apply(ctx, { python: 'python3', stateDir: dir, monitorMs: 600000 })
-  const step = (messages, signal = new AbortController().signal) =>
-    events.get('agent/pre-step')({ agent, messages, turn: 1, step: 1, signal }, async () => ({ kind: 'enter', messages }))
+  let token = 0
+  const call = (name, args = {}, signal = new AbortController().signal) => tools.get(name).execute(args, { agent, token: { t: ++token }, rootCallId: `r${token}`, signal })
   const rpc = async (body) => {
     const r = await route.fetch(new Request('http://x/api/hmz-flow/rpc', { method: 'POST', body: JSON.stringify(body) }))
     return { status: r.status, body: await r.json() }
   }
   const state = () => JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')).sessions[SID]
   const done = async () => { for (const d of disposers.reverse()) await d(); AdapterClient.prototype.request = original }
-  return { step, calls, guard: (exec) => guard({ agent, ...exec }), rpc, state, done }
+  return { events, calls, call, guard: (exec) => guard({ agent, ...exec }), rpc, state, done }
 }
 
-test('a typed task in flow mode starts the flow before the leader\'s step, exactly once', async () => {
+test('selecting a flow starts nothing by itself: no pre-step hook, user messages go to the secretary', async () => {
   const h = await harness()
   try {
-    const out = await h.step([user('m1', 'create hello.txt')])
-    assert.equal(h.calls.filter((c) => c.op === 'start').length, 1)
-    assert.match(h.calls.find((c) => c.op === 'start').args.task, /^create hello\.txt/)
-    assert.equal(out.kind, 'enter')
-    assert.equal(out.messages.length, 2, 'the user message plus one plugin notice')
-    assert.equal(out.messages[1].source.kind, 'hmz-flow')
-    assert.match(out.messages[1].content[0].text, /Do not do it yourself/)
-    await h.step([user('m1', 'create hello.txt')])
-    assert.equal(h.calls.filter((c) => c.op === 'start').length, 1, 'the same message id never starts twice')
-  } finally { await h.done() }
-})
-
-test('only fresh messages of a typed source start a flow; notices, replies and an active run do not', async () => {
-  const h = await harness()
-  try {
-    await h.step([user('n1', 'notice', 'hmz-flow'), user('n2', 'reply', 'user-question-reply'), user('n3', 'ctx', 'runtime-context')])
+    assert.equal(h.events.has('agent/pre-step'), false, 'no automatic start hook is registered')
     assert.equal(h.calls.filter((c) => c.op === 'start').length, 0)
-    await h.step([user('a', 'first task')])
-    await h.step([user('b', 'second message while the run is active')])
-    assert.equal(h.calls.filter((c) => c.op === 'start').length, 1, 'a running flow gets the leader, not a new run')
+    assert.equal(h.guard({ name: 'bash' }), undefined, 'selecting a flow alone does not block the secretary')
+    assert.equal(h.guard({ name: 'write' }), undefined)
+    assert.equal(h.guard({ name: 'hmz_flow_start' }), undefined)
   } finally { await h.done() }
 })
 
-test('cancelled before sending: no start, and the message may start later', async () => {
+test('the secretary\'s explicit start goes through the fenced SDK start; while active, writes are blocked', async () => {
   const h = await harness()
   try {
-    const abort = new AbortController()
-    abort.abort()
-    await h.step([user('c1', 'task')], abort.signal)
-    assert.equal(h.calls.filter((c) => c.op === 'start').length, 0)
-    await h.step([user('c1', 'task')])
-    assert.equal(h.calls.filter((c) => c.op === 'start').length, 1)
-  } finally { await h.done() }
-})
-
-test('a refused automatic start is reported, writes stay blocked in flow mode, a later success clears the error', async () => {
-  let refuse = true
-  const h = await harness({ start: () => {
-    if (refuse) { const e = new Error('workspace is busy'); e.outcome = 'refused'; throw e }
-    return { binding: { hostPid: 1, hostStarted: 'T', run: 1, epic: 'E1', epicName: 'E1', flow: 'chat', names: {} } }
-  } })
-  try {
-    const out = await h.step([user('r1', 'task')])
-    assert.match(out.messages[1].content[0].text, /not started: .*workspace is busy|workspace is busy/)
-    assert.equal(h.state().lastAutoStart.ok, false)
-    assert.ok(h.guard({ name: 'bash' }), 'bash blocked in flow mode after a refused start')
+    const out = await h.call('hmz_flow_start', { task: 'create hello.txt' })
+    assert.match(out, /^STARTED hmz run #1/)
+    const starts = h.calls.filter((c) => c.op === 'start')
+    assert.equal(starts.length, 1)
+    assert.match(starts[0].args.task, /^create hello\.txt/)
+    assert.ok(h.guard({ name: 'bash' }), 'bash blocked while the run is active')
     assert.ok(h.guard({ name: 'run_code' }))
+    assert.ok(h.guard({ name: 'hmz_flow_start' }), 'no second start while one is active')
     assert.equal(h.guard({ name: 'read' }), undefined)
-    assert.equal(h.guard({ name: 'hmz_flow_start' }), undefined, 'an explicit retry is allowed')
-    assert.equal((await h.rpc({ op: 'runs', sessionId: SID })).body.result.lastAutoStart.ok, false)
-    refuse = false
-    await h.step([user('r2', 'task again')])
-    assert.equal(h.state().lastAutoStart.ok, true)
-    assert.equal((await h.rpc({ op: 'runs', sessionId: SID })).body.result.lastAutoStart, null)
+    assert.equal(h.guard({ name: 'hmz_flow_send' }), undefined)
+    assert.match(await h.call('hmz_flow_start', { task: 'again' }), /^REFUSED: .*already has hmz run #1/)
+    assert.equal(h.calls.filter((c) => c.op === 'start').length, 1)
+  } finally { await h.done() }
+})
+
+test('a start whose tool call is cancelled before sending starts nothing', async () => {
+  const abort = new AbortController()
+  const h = await harness({ onFlow: () => abort.abort(new Error('the user cancelled the reply')) })
+  try {
+    const out = await h.call('hmz_flow_start', { task: 'task' }, abort.signal)
+    assert.match(out, /^REFUSED: .*cancelled/)
+    assert.deepEqual(h.calls.map((c) => c.op), ['flow'], 'the flow was read, no start was sent')
+    assert.equal(h.guard({ name: 'bash' }), undefined, 'nothing to protect')
+    const already = new AbortController()
+    already.abort()
+    assert.match(await h.call('hmz_flow_start', { task: 'task' }, already.signal), /^REFUSED: .*cancelled/)
+    assert.deepEqual(h.calls.map((c) => c.op), ['flow'])
+  } finally { await h.done() }
+})
+
+test('a message the secretary forwards goes to the exact current run', async () => {
+  const h = await harness()
+  try {
+    await h.call('hmz_flow_start', { task: 'task' })
+    const out = await h.call('hmz_flow_send', { role: 'assistant', text: 'also add a README' })
+    assert.match(out, /^ACCEPTED by hmz/)
+    const say = h.calls.find((c) => c.op === 'say')
+    assert.deepEqual(say.args.expect, { hostPid: 1, hostStarted: 'T', run: 1, epic: 'E1' })
+    assert.match(await h.call('hmz_flow_send', { text: 'no target' }), /^REFUSED: .*exactly one/)
+  } finally { await h.done() }
+})
+
+test('a refused start leaves no protection and no run; the secretary can say why', async () => {
+  const h = await harness({ start: () => { const e = new Error('workspace is busy'); e.outcome = 'refused'; throw e } })
+  try {
+    const out = await h.call('hmz_flow_start', { task: 'task' })
+    assert.match(out, /^REFUSED: .*workspace is busy/)
+    assert.equal(h.guard({ name: 'bash' }), undefined, 'no run, no protection')
+    assert.deepEqual((await h.rpc({ op: 'runs', sessionId: SID })).body.result.runs, [])
+  } finally { await h.done() }
+})
+
+test('records of the old automatic start affect neither a manual start nor the Flow page', async () => {
+  const h = await harness({ legacy: true })
+  try {
+    const before = (await h.rpc({ op: 'runs', sessionId: SID })).body.result
+    assert.equal('lastAutoStart' in before, false, 'no old auto-start error is shown')
+    assert.match(await h.call('hmz_flow_start', { task: 'task' }), /^STARTED/)
+    const after = (await h.rpc({ op: 'runs', sessionId: SID })).body.result
+    assert.equal(after.runs.length, 1)
+    assert.equal('lastAutoStart' in after, false)
+    assert.deepEqual(h.state().autoStarted, ['old-message-1', 'old-message-2'], 'old records are left as they were')
   } finally { await h.done() }
 })
 
 test('Stop names the exact run it was shown for; a stale identity stops nothing', async () => {
   const h = await harness()
   try {
-    await h.step([user('s1', 'task')])
+    await h.call('hmz_flow_start', { task: 'task' })
     const run = (await h.rpc({ op: 'runs', sessionId: SID })).body.result.runs[0]
     const stale = await h.rpc({ op: 'stopRun', sessionId: SID, runId: run.runId, identity: { ...run.identity, run: 99 } })
     assert.equal(stale.body.ok, false)

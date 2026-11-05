@@ -68,7 +68,7 @@ window.__ModuleLoader__.load({
       'view.label': 'Flow',
       'view.scope': '本页只显示这个 DSH 会话启动的 hmz 任务。',
       'view.empty': '这个会话还没有 flow 任务。',
-      'view.emptySelected': '已选 flow：{flow}。向 leader 说明要做的事，它会为本会话启动任务。',
+      'view.emptySelected': '已选 flow：{flow}。消息先交给秘书（leader），由它判断是直接回答、澄清，还是用这个 flow 启动任务或转发给运行中的 flow。',
       'view.emptyHint': '在输入框键入 / ，在 Flow 分组选择一个 flow。',
       'view.runs': '本会话的任务',
       'view.current': '当前',
@@ -87,7 +87,6 @@ window.__ModuleLoader__.load({
       'view.task': '任务',
       'view.readonly': '在 DSH 里请通过 leader 发送、回答或停止',
       'view.outOfScope': '不属于这个 DSH 会话的这个任务',
-      'view.autoFailed': '上一个任务没有进入 flow（{outcome}）：{why}',
       'phase.starting': '启动中',
       'phase.running': '运行中',
       'phase.waitingAnswer': '等待回答（{n}）',
@@ -157,7 +156,7 @@ window.__ModuleLoader__.load({
       'view.label': 'Flow',
       'view.scope': 'This page shows only the hmz runs this DSH session started.',
       'view.empty': 'This session has no flow runs yet.',
-      'view.emptySelected': 'Selected flow: {flow}. Tell the leader what to do and it starts a run for this session.',
+      'view.emptySelected': 'Selected flow: {flow}. Messages go to the secretary (leader) first; it decides whether to answer, ask, start a run with this flow, or pass a message to a running flow.',
       'view.emptyHint': 'Type / in the composer and pick a flow in the Flow group.',
       'view.runs': 'Runs of this session',
       'view.current': 'current',
@@ -176,7 +175,6 @@ window.__ModuleLoader__.load({
       'view.task': 'Task',
       'view.readonly': 'In DSH, send, answer or stop through the leader',
       'view.outOfScope': 'Not part of this DSH session\'s run',
-      'view.autoFailed': 'The last task did not enter the flow ({outcome}): {why}',
       'phase.starting': 'starting',
       'phase.running': 'running',
       'phase.waitingAnswer': 'waiting for your answer ({n})',
@@ -707,13 +705,11 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view' }, h(Style),
           h('div', { className: 'hmzf-pad hmzf-desc' }, listError ? h('span', { className: 'hmzf-error' }, listError) : t('view.loading')))
       }
-      const failed = list.lastAutoStart
       if (!list.runs.length) {
         return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view', 'data-hmz-state': 'empty' }, h(Style),
           h('div', { className: 'hmzf-empty' },
             h('div', { className: 'hmzf-empty-title' }, t('view.empty')),
             h('div', { className: 'hmzf-desc' }, flow ? fmt(t('view.emptySelected'), { flow }) : t('view.emptyHint')),
-            failed ? h('div', { className: 'hmzf-error', 'data-hmz-flow': 'autostart-error' }, fmt(t('view.autoFailed'), { why: failed.error, outcome: failed.outcome })) : null,
             h('div', { className: 'hmzf-desc' }, t('view.scope'))))
       }
       const selected = list.runs.find((r) => r.runId === runId) || list.runs[0]
@@ -736,7 +732,6 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
           selected.current && selected.phase === 'stopping'
             ? h('button', { type: 'button', className: 'hmzf-stop', disabled: true, 'data-hmz-flow': 'stop' }, t('stop.stopping')) : null),
         note ? h('div', { className: 'hmzf-error hmzf-pad' }, note) : null,
-        failed ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'autostart-error' }, fmt(t('view.autoFailed'), { why: failed.error, outcome: failed.outcome })) : null,
         current && selected.runId !== current.runId
           ? h('div', { className: 'hmzf-note', 'data-hmz-flow': 'history-note' }, fmt(t('view.history'), { current: ` #${current.run ?? '?'}` })) : null,
         selected.current && pending.length

@@ -20,9 +20,9 @@ import { VIEWER_PATH, viewerHandler } from './lib/viewer-route.js'
 import { StateStore, isValidSessionId } from './lib/state.js'
 import { describeSelection, formatStatus, formatBinding } from './lib/present.js'
 import { FlowController, FlowError, ACTIVE } from './lib/controller.js'
-import { InFlight, flowModeCallReason, protectedCallReason, protectedRootOf } from './lib/policy.js'
+import { InFlight, protectedCallReason, protectedRootOf } from './lib/policy.js'
 import { validateOptions } from './lib/options.js'
-import { composeTask, historySnapshot, USER_SOURCES } from './lib/history.js'
+import { composeTask, historySnapshot } from './lib/history.js'
 import { fallbackUserMessage, loadUserMessageFactory, noticeMessage } from './lib/message.js'
 
 export const name = 'dsh-hmz-flow'
@@ -143,21 +143,12 @@ export function apply(ctx, rawConfig = {}) {
   }).catch((error) => { staticDir = null; throw error }))
   ctx.effect(() => ctx.webServer.register({ kind: 'prefix', path: VIEWER_PATH, handler: viewerHandler({ staticDir: viewerStatic, logger }) }), 'hmz-flow: viewer route')
 
-  /** Root sessions in flow mode (a flow is selected). */
-  function flowModeIds() {
-    const ids = []
-    for (const root of ctx.agents.roots()) {
-      try { if (store.selection(root.id).flow) ids.push(root.id) } catch {}
-    }
-    return ids
-  }
   ctx.effect(() => ctx.tools.guard((exec) => {
+    // Write protection while this session's run is starting / running / stopping /
+    // unknown (or a start is being fenced). Selecting a flow alone protects nothing:
+    // the secretary decides what goes to the flow.
     const ids = controller.protectedIds()
     if (ids.size && protectedRootOf(ctx.agents, exec.agent, ids)) return protectedCallReason(exec)
-    // Flow mode without an active run (none started yet, or a start that was
-    // refused): tasks belong to the flow, so the leader still may not write.
-    const modes = flowModeIds()
-    if (modes.length && protectedRootOf(ctx.agents, exec.agent, modes)) return flowModeCallReason(exec)
     return undefined
   }), 'hmz-flow: write guard')
 
@@ -312,7 +303,7 @@ export function apply(ctx, rawConfig = {}) {
 
   register({
     name: 'hmz_flow_start',
-    description: 'Start the hmz flow selected in the DSH composer (flow选项) with the options saved there. A task the user sends in flow mode is started automatically; use this only when the user explicitly asks to retry a start that failed. Never for a progress question or because of an hmz notice. While the run is active the flow edits code and this session can only read, talk to the flow (hmz_flow_send) and stop it.',
+    description: 'Start the hmz flow selected in the DSH composer (flow选项) with the options saved there, for a task the user wants done. Selecting a flow is not itself a request to run anything: call this when the user\'s message asks for work that suits the flow (ask briefly only if the goal is really unclear). Never for a progress question, a discussion, or because of an hmz notice. While the run is active the flow edits code and this session can only read, talk to the flow (hmz_flow_send) and stop it.',
     parameters: {
       type: 'object',
       properties: { task: { type: 'string', description: 'The task for the flow, in the user\'s terms; complete and self-contained.' } },
@@ -327,7 +318,11 @@ export function apply(ctx, rawConfig = {}) {
       const task = typeof args?.task === 'string' ? args.task.trim() : ''
       if (!task) return 'REFUSED: task is required'
       try {
-        return startedText(await startFlow(agent, task, { exceptToken: exec.token }))
+        // A call cancelled before the start is sent starts nothing (checked after the
+        // flow is read and again in the controller's queue); once hmz has it, the run
+        // outlives the leader's turn.
+        if (exec.signal?.aborted) return 'REFUSED: the call was cancelled; nothing was started'
+        return startedText(await startFlow(agent, task, { exceptToken: exec.token, signal: exec.signal }))
       } catch (error) {
         return failText(error)
       }
@@ -336,7 +331,7 @@ export function apply(ctx, rawConfig = {}) {
 
   register({
     name: 'hmz_flow_send',
-    description: 'Send a message to one agent of the bound hmz run: name the role (e.g. "reviewer") or the agent id from hmz_flow_status, exactly one. hmz queues it for that agent\'s current or next turn; accepted means queued, not acted on.',
+    description: 'Send a message to one agent of the bound hmz run: name the role (e.g. "reviewer") or the agent id from hmz_flow_status, exactly one. Use it when the user wants something passed to the flow (an instruction, a correction, more requirements); do not forward questions you can answer yourself, progress questions or small talk. hmz queues it for that agent\'s current or next turn; accepted means queued, not acted on.',
     parameters: {
       type: 'object',
       properties: {
@@ -426,9 +421,10 @@ export function apply(ctx, rawConfig = {}) {
   })
 
   /**
-   * The one way a flow starts, for the leader tool and for the automatic start
-   * of a user's task: the selected flow, its saved options (frozen), the
-   * optional visible-history background, and the controller's fenced start.
+   * How the secretary starts the selected flow (the hmz_flow_start tool): the
+   * selected flow, its saved options (frozen), the optional visible-history
+   * background, and the controller's fenced, serialized start. `signal` is the
+   * tool call's own: a cancellation before the start is sent starts nothing.
    */
   async function startFlow(agent, task, { exceptToken, excludeIds, signal } = {}) {
     const selection = store.selection(agent.id)
@@ -458,67 +454,6 @@ export function apply(ctx, rawConfig = {}) {
       'Write protection is ON for this session until the run is verified ended. Use hmz_flow_status for progress.',
     ].join('\n')
   }
-
-  // ------------------------------------------------ automatic start of a task
-  // With a flow selected and no run of this session active, a task the user
-  // sends goes into the flow: the start happens before the leader's step, not
-  // by the leader's choice. Only messages a person typed count (`user`,
-  // `user-rpc`); notices, contexts, question replies and other producers never
-  // start a flow. Each message id starts at most once (persisted first).
-  const autoStartable = (message) => message?.role === 'user' && USER_SOURCES.has(message.source?.kind)
-    && typeof message.id === 'string' && message.content?.some?.((b) => b?.type === 'text' && b.text?.trim())
-  ctx.on('agent/pre-step', async (payload, next) => {
-    const decision = await next()
-    if (!decision || decision.kind !== 'enter') return decision
-    const agent = payload.agent
-    if (!agent || !isRoot(agent)) return decision
-    let selection
-    try { selection = store.selection(agent.id) } catch { return decision }
-    if (!selection.flow) return decision
-    const current = store.binding(agent.id)
-    if (current && ACTIVE.has(current.phase)) return decision // a running flow: the leader relays messages
-    if (payload.signal?.aborted) return decision
-    const candidates = decision.messages.filter(autoStartable)
-    if (!candidates.length) return decision
-    // Only messages not seen before form the task; each id is claimed (persisted)
-    // before anything is sent, so a replay, retry or later step never repeats it.
-    let tasks = []
-    try {
-      tasks = store.update(agent.id, (entry) => {
-        const seen = new Set(entry.autoStarted ?? [])
-        const fresh = candidates.filter((m) => !seen.has(m.id))
-        if (fresh.length) entry.autoStarted = [...(entry.autoStarted ?? []), ...fresh.map((m) => m.id)].slice(-200)
-        return fresh
-      })
-    } catch (error) {
-      logger.warn('hmz-flow: could not record the automatic start: %s', error.message)
-      return { ...decision, messages: [...decision.messages, noticeMessage(createUserMessage,
-        `[hmz flow notice — not a user message] The selected flow ${selection.flow} was NOT started for the message above: its start could not be recorded (${error.message}). Tell the user; do not do the task yourself while flow mode is on.`,
-        'hmz flow not started')] }
-    }
-    if (!tasks.length) return decision
-    const ids = tasks.map((m) => m.id)
-    const task = tasks.map((m) => m.content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')).join('\n\n').trim()
-    let text
-    let summary
-    try {
-      const started = await startFlow(agent, task, { excludeIds: ids, signal: payload.signal })
-      try { store.update(agent.id, (entry) => { entry.lastAutoStart = { at: new Date().toISOString(), ok: true, runId: started.binding.requestId } }) } catch {}
-      text = `[hmz flow notice — not a user message] Flow mode is on: the user's message above was started as hmz ${startedText(started).replace(/^STARTED /, '')}\nThe flow does the task. Do not do it yourself: tell the user briefly that ${selection.flow} is running it and that progress is visible in the Flow tab.`
-      summary = `hmz run #${started.binding.run} started`
-    } catch (error) {
-      if (payload.signal?.aborted && !error.accepted && error.outcome !== 'unknown') {
-        // Cancelled before anything was sent: the messages may start a flow later.
-        try { store.update(agent.id, (entry) => { entry.autoStarted = (entry.autoStarted ?? []).filter((id) => !ids.includes(id)) }) } catch {}
-        return decision
-      }
-      const outcome = error.accepted ? 'accepted by hmz but not recorded' : error.outcome === 'unknown' ? 'outcome unknown' : 'not started'
-      text = `[hmz flow notice — not a user message] Flow mode is on (${selection.flow}), but the task above was ${outcome}: ${error.message}\nDo not do the task yourself (write tools stay blocked in flow mode). Tell the user what happened; they can fix the flow options and ask you to retry with hmz_flow_start, or leave flow mode.`
-      summary = `hmz flow ${outcome}`
-      try { store.update(agent.id, (entry) => { entry.lastAutoStart = { at: new Date().toISOString(), ok: false, outcome, error: error.message } }) } catch {}
-    }
-    return { ...decision, messages: [...decision.messages, noticeMessage(createUserMessage, text, summary)] }
-  })
 
   function rootIdOf(agent) {
     for (const root of ctx.agents.roots()) {
@@ -563,8 +498,9 @@ function leaderContext(selection, binding, protectedNow) {
   }
   if (protectedNow) lines.push('Write protection is ON: the flow edits code; you may read, talk to the user, send to flow agents (hmz_flow_send), relay questions (hmz_flow_answer) and stop the flow (hmz_flow_stop). Do not try to edit files or run shells.')
   lines.push(
-    'You are the leader/secretary: the user keeps talking to you. While a flow is selected and none of this session\'s runs is active, the user\'s next task is started in the flow automatically before you see it, and you get an [hmz flow notice] saying so (or why it failed). Never do such a task yourself; hmz_flow_start is only for an explicit retry the user asks for.',
-    'For progress questions use hmz_flow_status only. Route messages to a role (or agent id) with hmz_flow_send; never guess an empty target.',
+    'You are the leader/secretary: every user message comes to you first, and you decide what to do with it. The selected flow is the process you may use, not an order to use it for every message.',
+    'When the user asks for work that suits the flow, start it with hmz_flow_start (no extra confirmation needed). Answer discussion and questions yourself; ask a short clarifying question only when the goal or the recipient is really unclear.',
+    'While a run is active: progress questions -> hmz_flow_status only; messages the user wants passed to the flow -> hmz_flow_send to the right role (or agent id), never an empty target; do not forward everything.',
     'Questions hmz asks a human go to the real user via hmz_flow_answer; never answer them yourself.',
     'Do not run `hmz` through a shell as a substitute for these tools.',
   )

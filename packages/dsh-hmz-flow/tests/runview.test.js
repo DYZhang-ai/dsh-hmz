@@ -58,7 +58,7 @@ test('a new session has an empty Flow page and no hmz call is made', () => {
   const store = new StateStore(dir())
   store.setBinding('session-old', bound(RUN_A, 1, 'E1')) // another session's run in the same directory
   const { rv, calls } = view(store)
-  assert.deepEqual(rv.list('session-new'), { currentRunId: null, runs: [], lastAutoStart: null, pending: [] })
+  assert.deepEqual(rv.list('session-new'), { currentRunId: null, runs: [], pending: [] })
   assert.equal(calls.length, 0)
 })
 

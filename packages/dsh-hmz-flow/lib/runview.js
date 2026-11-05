@@ -54,11 +54,9 @@ export class RunView {
     const currentRunId = current?.requestId ?? null
     const runs = store.runsOf(sessionId).map((run) => runSummary(run, currentRunId)).reverse()
     const observed = this.deps.lastObserved?.(sessionId)
-    const entry = store.entry(sessionId)
     return {
       currentRunId,
       runs,
-      lastAutoStart: entry && entry.lastAutoStart && !entry.lastAutoStart.ok ? entry.lastAutoStart : null,
       // Questions hmz waits on for the current run, as last observed (no new hmz call).
       pending: observed && observed.runId === currentRunId ? observed.pending ?? [] : [],
     }
