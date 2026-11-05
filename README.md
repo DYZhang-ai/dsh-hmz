@@ -6,7 +6,10 @@
 ## 产品行为
 
 - **DSH 入口 Agent 是 leader / 秘书。** 普通消息照常发给它；它判断用户意图，再调用 flow 工具。hmz 负责 flow 内部编排，leader 不充当 hmz 的角色。
-- **选择 flow：** 在输入框键入 `/`，在“添加 / 指令”之后的 **Flow** 分组里选一个 flow。输入框底部出现“**flow选项**”，点开后的面板由 hmz 的 flow 声明驱动：
+- **选择 flow：** 两条入口，保存逻辑相同，都只做选择、不会启动：
+  - 点输入框左下角的 **＋**，在“指令”里选 **Flow**，弹出窗口会列出当前目录的 hmz flow（已选中时还有“取消 flow 模式”）。这一入口通过 DSH 公开的 `commandUi.register` popupSelect 实现，不会动草稿。
+  - 键入 `/`，在“添加 / 指令”之后的 **Flow** 分组里选一个 flow。
+  选中后，输入框底部出现“**flow选项**”，点开后的面板由 hmz 的 flow 声明驱动：
   - 每个角色的 CLI / 账号 / 模型（可自填，带候选列表）/ effort；
   - 预算（费用、时间、输出 token，以及各自是否 graceful）、环境、params、profile 开关；
   - “附带前文”开关，默认开启。
@@ -119,6 +122,7 @@ HUMANIZE_HOME=... TMPDIR=<私有 tmp> "$PY" -I tests/e2e/adapter_epic_read.py "$
 HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... "$PY" -I tests/e2e/adapter_actions.py "$ADAPTER" <测试目录>
 # 浏览器（Playwright；用带 playwright 的 python，并在 tests/e2e 目录里运行，因为脚本要导入同目录的 dshpage.py）
 PW=/root/src/humanize-installed-dsh/.venv/bin/python
+(cd tests/e2e && "$PW" plus_menu.py "$PWD/../../.preview-test")       # ＋ → Flow → 选择 / 取消，草稿保留，不启动
 (cd tests/e2e && "$PW" view_race.py "$PWD/../../.preview-test")       # 真实 client.js + 模拟 RPC：切换 run / Session 时的迟到响应
 (cd tests/e2e && "$PW" flow_rpc_real.py "$PWD/../../.preview-test")   # 真实 Host + 适配器 + SDK：本会话读取，跨会话 403
 # 会启动真实 DeepSeek run，需 PREVIEW_TMUX=dsh-hmz-test DSH_PORT=44190 等专用测试预览

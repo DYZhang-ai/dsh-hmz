@@ -13,6 +13,11 @@ window.__ModuleLoader__.load({
 
     const zh = {
       'menu.section': 'Flow',
+      'cmd.label': 'Flow',
+      'cmd.desc': '选择本会话使用的 hmz flow（只选择，不启动）',
+      'cmd.search': '搜索 flow',
+      'cmd.empty': '当前目录没有可用的 hmz flow',
+      'cmd.noResults': '没有匹配的 flow',
       'menu.cancel': '取消 flow 模式',
       'menu.cancel.desc': '回到普通 DSH 对话',
       'menu.selected': '已选',
@@ -90,6 +95,11 @@ window.__ModuleLoader__.load({
     }
     const en = {
       'menu.section': 'Flow',
+      'cmd.label': 'Flow',
+      'cmd.desc': 'Choose the hmz flow for this session (select only, does not start)',
+      'cmd.search': 'Search flows',
+      'cmd.empty': 'No hmz flows are available here',
+      'cmd.noResults': 'No matching flow',
       'menu.cancel': 'Leave flow mode',
       'menu.cancel.desc': 'Back to ordinary DSH conversation',
       'menu.selected': 'selected',
@@ -227,6 +237,27 @@ window.__ModuleLoader__.load({
         one.saving = false
         emit(one)
       }
+    }
+    /** Save a selection and report failure to the caller (the popup shows it). */
+    async function saveOrThrow(sessionId, patch) {
+      const one = entry(sessionId)
+      one.saving = true
+      emit(one)
+      try {
+        one.selection = { ...one.selection, ...(await rpc('setSelection', sessionId, { selection: patch })) }
+        one.error = null
+      } catch (error) {
+        one.error = error.message
+        throw error
+      } finally {
+        one.saving = false
+        emit(one)
+      }
+    }
+    /** The one way a flow is chosen (from `/` or from +): select only, never start. */
+    async function chooseFlow(sessionId, flow) {
+      await saveOrThrow(sessionId, { flow })
+      setOpen(sessionId, !!flow)
     }
     function setOpen(sessionId, open) {
       const one = entry(sessionId)
@@ -771,10 +802,57 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
           if (pick.action !== 'pick') return undefined
           const sessionId = pick.session.sessionId
           consume(sessionId, pick.span)
-          const flow = pick.candidate.value || null
-          void save(sessionId, { flow }).then(() => { if (flow) setOpen(sessionId, true) })
-          if (!flow) setOpen(sessionId, false)
+          // A failure is kept in the session entry and shown in the composer controls.
+          void chooseFlow(sessionId, pick.candidate.value || null).catch(() => {})
           return 'handled'
+        },
+      }
+    }
+
+    /** Value of the "leave flow mode" row; never a flow name (flow names have no spaces). */
+    const OFF = ' off'
+
+    /**
+     * The composer's + menu lists only `command` entries, so the flow choice is
+     * also a client command contribution (`/flow`): its popup lists this
+     * workspace's hmz flows through the shared popupSelect shell, which owns
+     * the trigger token and leaves any draft text alone.
+     */
+    /** Row glyph in the shared icon style: currentColor strokes on a 16px grid. */
+    function FlowIcon(props) {
+      const size = (props && props.size) || 16
+      return h('svg', { width: size, height: size, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true, className: props && props.className },
+        h('circle', { cx: 4, cy: 4, r: 1.6, stroke: 'currentColor' }),
+        h('circle', { cx: 12, cy: 4, r: 1.6, stroke: 'currentColor' }),
+        h('circle', { cx: 8, cy: 12, r: 1.6, stroke: 'currentColor' }),
+        h('path', { d: 'M5.2 5.2 7.2 10.6M10.8 5.2 8.8 10.6', stroke: 'currentColor' }))
+    }
+
+    function flowCommand(ctx, t) {
+      return {
+        name: 'flow',
+        icon: FlowIcon,
+        label: () => t('cmd.label'),
+        description: () => t('cmd.desc'),
+        available: (session) => !(ctx.sessions && typeof ctx.sessions.subagentAddress === 'function' && ctx.sessions.subagentAddress(session.sessionId) !== undefined),
+        ui: {
+          kind: 'popupSelect',
+          searchMode: 'fuzzy-label',
+          searchLabels: () => ({ placeholder: t('cmd.search'), empty: t('cmd.empty'), noResults: t('cmd.noResults') }),
+          async options(session) {
+            const sessionId = session.sessionId
+            const one = entry(sessionId)
+            if (!one.selection) await load(sessionId)
+            const listed = await rpc('flows', sessionId)
+            const selected = one.selection && one.selection.flow
+            const group = { name: 'hmz-flows', label: t('menu.section') }
+            const rows = listed.flows.map((f) => ({ id: f.name, label: f.name, detail: f.about || '', active: f.name === selected, group }))
+            if (selected) rows.push({ id: OFF, label: t('menu.cancel'), detail: t('menu.cancel.desc') })
+            return rows
+          },
+          async onSelect(option, session) {
+            await chooseFlow(session.sessionId, option.id === OFF ? null : option.id)
+          },
         },
       }
     }
@@ -785,6 +863,10 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'hmz-flow: dictionaries')
         const t = ctx.locale.bind(NS)
         ctx.effect(() => ctx.inputTriggers.registerSource(makeSource(ctx, t)), 'hmz-flow: / source')
+        // The + menu entry, through the public command contribution API.
+        ctx.inject(['commandUi'], (scope) => {
+          scope.effect(() => scope.get('commandUi').register(flowCommand(ctx, t)), 'hmz-flow: /flow command')
+        })
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: 'hmz-flow-options', order: 50, locale: NS,
         }, makeOptionsButton(t)))
