@@ -39,6 +39,8 @@ prepare() {
   [ -d "$demo/.git" ] || (cd "$demo" && git init -q && echo "# demo" > README.md && git add README.md && git -c user.email=demo@example -c user.name=demo commit -qm init)
   hmz_python="$(cd "$(dirname "$HMZ_BIN")/.." && pwd -P)/venv/bin/python"
   [ -x "$hmz_python" ] || { echo "no hmz venv python at $hmz_python" >&2; exit 1; }
+  # What the hmz launcher would export for its dsh backend.
+  hmz_dsh_bin=$(cat "$(dirname "$hmz_python")/../../share/dsh-path" 2>/dev/null || true)
   ln -sfn "$pkg" "$profile_dir/node_modules/@dsh-hmz/flow"
   cat > "$profile_dir/package.json" <<JSON
 {
@@ -60,6 +62,7 @@ JSON
     hmzEnv:
       HUMANIZE_HOME: '$hmz_home'
       TMPDIR: '$hmz_tmp'
+      HUMANIZE_DSH_BIN: '$hmz_dsh_bin'
 # Preview only: skip the one-time welcome notice so browser probes reach the UI.
 - id: ui-settings-general
   name: '@deepseek-ai/dsh-client-ui-settings-general'

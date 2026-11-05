@@ -10,7 +10,7 @@ async def open_workspace(pg, url, workspace):
     await pg.keyboard.press('Escape')  # "开始使用" credentials prompt in a key-less preview
     await pg.wait_for_timeout(300)
     picker = pg.get_by_text('选择工作区', exact=True)
-    if await picker.count() == 0:
+    if await picker.count() == 0 or not await picker.first.is_visible():
         return  # the workspace chosen earlier is already current
     await picker.first.click(timeout=8000)
     await pg.wait_for_timeout(800)

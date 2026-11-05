@@ -46,3 +46,35 @@ test('an unknown state format is not overwritten', () => {
   assert.throws(() => new StateStore(d), /unknown format/)
   assert.equal(JSON.parse(readFileSync(join(d, 'state.json'), 'utf8')).version, 99)
 })
+
+test('regression: a failed durable write leaves the visible state unchanged', async () => {
+  const { mkdirSync, rmSync } = await import('node:fs')
+  const d = dir()
+  const store = new StateStore(d)
+  store.setSelection('session-a', { flow: 'chat' })
+  rmSync(join(d, 'state.json'))
+  mkdirSync(join(d, 'state.json')) // rename onto a directory fails
+  assert.throws(() => store.setSelection('session-a', { flow: 'rlar' }))
+  assert.equal(store.selection('session-a').flow, 'chat')
+  assert.throws(() => store.setBinding('session-a', { run: 1 }))
+  assert.equal(store.binding('session-a'), undefined)
+})
+
+test('regression: reserved or malformed session ids are refused and cannot pollute prototypes', () => {
+  const store = new StateStore(dir())
+  for (const bad of ['__proto__', 'constructor', 'prototype', '', '../x', 'a b', 'x'.repeat(200), 5, null]) {
+    assert.throws(() => store.setSelection(bad, { flow: 'rlar' }), /invalid session/, String(bad))
+  }
+  assert.equal(Object.hasOwn(Object.prototype, 'selection'), false)
+  assert.equal({}.selection, undefined)
+})
+
+test('a state file with a __proto__ session key loads without pollution', () => {
+  const d = dir()
+  writeFileSync(join(d, 'state.json'), '{"version":2,"sessions":{"__proto__":{"selection":{"flow":"evil"}},"session-ok":{"selection":{"flow":"rlar","__proto__":{"x":1}}}}}')
+  const store = new StateStore(d)
+  assert.equal(store.selection('session-ok').flow, 'rlar')
+  assert.equal(({}).flow, undefined)
+  assert.equal(({}).x, undefined)
+})
+

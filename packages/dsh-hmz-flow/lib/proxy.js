@@ -32,6 +32,39 @@ const HOP_HEADERS = new Set([
 ])
 
 /**
+ * Whether a request-target is a plain origin-form path ("/x?y") that cannot
+ * name another authority. Absolute-form ("http://h/"), network-path ("//h/")
+ * and backslash spellings (WHATWG URL treats "\\" like "/") are refused.
+ * @param {unknown} target
+ */
+export function isOriginFormTarget(target) {
+  if (typeof target !== 'string' || target.length === 0 || target.length > 8192) return false
+  if (target[0] !== '/') return false
+  if (target.startsWith('//')) return false
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\x00-\x20\x7f]/.test(target)) return false
+  return true
+}
+
+/**
+ * Validate the configured hmz web origin: plain http on a loopback address,
+ * no credentials, path or query.
+ * @param {string} origin
+ * @returns {{origin: string, hostname: string, port: number}}
+ */
+export function loopbackHttpOrigin(origin) {
+  let url
+  try { url = new URL(origin) } catch { throw new Error('hmz web origin is not a URL') }
+  if (url.protocol !== 'http:') throw new Error('hmz web origin must be http:')
+  if (url.username || url.password) throw new Error('hmz web origin must not carry credentials')
+  const host = url.hostname
+  const loopback = host === 'localhost' || host === '[::1]' || /^127(\.\d{1,3}){3}$/.test(host)
+  if (!loopback) throw new Error(`hmz web origin must be a loopback address, not ${host}`)
+  const port = Number(url.port || 80)
+  return { origin: url.origin, hostname: host.replace(/^\[|\]$/g, ''), port }
+}
+
+/**
  * Replace the frame-ancestors directive of a CSP header value.
  * @param {string} policy
  * @param {string[]} ancestors
@@ -78,6 +111,10 @@ export function createHmzProxy(options) {
   const sessions = new Map() // sid -> expires
   let upstreamCookie = null // "name=value" from hmz sign-in
   let upstreamOrigin = null
+  let upstreamHost = null // { hostname, port } fixed at sign-in; every forward goes only here
+  let closed = false
+  let bindSettled = Promise.resolve() // resolves (never rejects) once the current bind succeeded or failed
+  let upstreamStale = false // re-read the configured hmz web address before the next request
   let signingIn = null
   let server = null
   let port = 0
@@ -95,18 +132,24 @@ export function createHmzProxy(options) {
     const ticket = randomBytes(24).toString('base64url')
     const hash = typeof to === 'string' && to.startsWith('#') ? to : ''
     tickets.set(ticket, { expires: Date.now() + ticketTtl, to: hash })
+    // Opening or reconnecting the Flow view re-reads where hmz web is now (it may
+    // have restarted on another random port with a new key).
+    upstreamStale = true
     return { path: `${ENTER_PATH}?ticket=${encodeURIComponent(ticket)}`, port, expiresInMs: ticketTtl }
   }
 
   async function signIn(force = false) {
-    if (upstreamCookie && !force) return upstreamCookie
+    if (upstreamCookie && !force && !upstreamStale) return upstreamCookie
     if (signingIn) return signingIn
     signingIn = (async () => {
       const { origin, key } = await options.upstream()
-      const url = new URL('/', origin)
-      url.searchParams.set('key', key)
+      const fixed = loopbackHttpOrigin(origin)
+      if (typeof key !== 'string' || key === '') throw new Error('hmz web key is missing')
       const cookie = await new Promise((resolve, reject) => {
-        const req = http.request(url, { method: 'GET' }, (res) => {
+        const req = http.request({
+          hostname: fixed.hostname, port: fixed.port, method: 'GET',
+          path: `/?key=${encodeURIComponent(key)}`,
+        }, (res) => {
           res.resume()
           const set = res.headers['set-cookie'] ?? []
           const first = set.map((one) => one.split(';')[0]).find((one) => one.includes('='))
@@ -116,8 +159,10 @@ export function createHmzProxy(options) {
         req.on('error', reject)
         req.end()
       })
-      upstreamOrigin = new URL(origin).origin
+      upstreamOrigin = fixed.origin
+      upstreamHost = { hostname: fixed.hostname, port: fixed.port }
       upstreamCookie = cookie
+      upstreamStale = false
       return cookie
     })()
     try { return await signingIn } finally { signingIn = null }
@@ -167,18 +212,23 @@ export function createHmzProxy(options) {
 
   function forward(req, res, retried) {
     const cookie = upstreamCookie
-    const target = new URL(req.url, upstreamOrigin)
+    // Host and port come only from the validated upstream; the request-target was
+    // checked to be origin-form in handle() and is passed as a path, never parsed
+    // against a base where it could name another authority.
+    const target = upstreamHost
     const headers = {}
     for (const [name, value] of Object.entries(req.headers)) {
       if (!HOP_HEADERS.has(name)) headers[name] = value
     }
-    headers.host = target.host
+    headers.host = `${target.hostname.includes(':') ? `[${target.hostname}]` : target.hostname}:${target.port}`
     headers.cookie = cookie
     if (typeof headers.origin === 'string' && selfOrigins(req).includes(headers.origin)) {
       headers.origin = upstreamOrigin
     }
     if (headers.referer) delete headers.referer
-    const upstreamReq = http.request(target, { method: req.method, headers }, (upstreamRes) => {
+    const upstreamReq = http.request({
+      hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers,
+    }, (upstreamRes) => {
       if (upstreamRes.statusCode === 401 && !retried && (req.method === 'GET' || req.method === 'HEAD')) {
         upstreamRes.resume()
         signIn(true).then(() => forward(req, res, true), (error) => refuse(res, 502, `hmz web sign-in failed: ${error.message}`))
@@ -202,7 +252,17 @@ export function createHmzProxy(options) {
       upstreamRes.pipe(res)
     })
     upstreamReq.on('error', (error) => {
-      if (!res.headersSent) refuse(res, 502, `hmz web is not reachable: ${error.message}`)
+      const safe = req.method === 'GET' || req.method === 'HEAD'
+      if (!res.headersSent && safe && !retried) {
+        // hmz web may have restarted elsewhere: re-read its address and retry a
+        // read once. A write is never re-sent: its outcome is unknown.
+        signIn(true).then(() => forward(req, res, true), (why) => {
+          if (!res.headersSent) refuse(res, 502, `hmz web is not reachable: ${error.message}; re-reading its address failed: ${why.message}`)
+        })
+        return
+      }
+      upstreamStale = true
+      if (!res.headersSent) refuse(res, 502, `hmz web is not reachable: ${error.message}${safe ? '' : ' (this write was not retried; its outcome is unknown)'}`)
       else res.destroy(error)
     })
     res.on('close', () => upstreamReq.destroy())
@@ -210,6 +270,7 @@ export function createHmzProxy(options) {
   }
 
   async function handle(req, res) {
+    if (!isOriginFormTarget(req.url)) return refuse(res, 400, 'Only origin-form request targets are accepted.')
     if (!hostAllowed(req)) return refuse(res, 421, 'Unexpected Host for the hmz embed proxy.')
     if (req.headers['sec-fetch-site'] === 'cross-site') return refuse(res, 403, 'Cross-site requests are refused.')
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
@@ -244,6 +305,9 @@ export function createHmzProxy(options) {
     get port() { return port },
     get sessionCount() { return sessions.size },
     listen() {
+      if (closed) return Promise.reject(new Error('hmz embed proxy is closed'))
+      let settle
+      bindSettled = new Promise((r) => { settle = r })
       return new Promise((resolve, reject) => {
         server = http.createServer((req, res) => {
           handle(req, res).catch((error) => {
@@ -252,21 +316,42 @@ export function createHmzProxy(options) {
             else res.destroy()
           })
         })
-        server.once('error', reject)
-        server.listen(options.port ?? 0, host, () => {
-          port = server.address().port
+        const listening = server
+        listening.once('error', (error) => {
+          if (server === listening) server = null
+          settle()
+          reject(error)
+        })
+        listening.listen(options.port ?? 0, host, () => {
+          if (closed || server !== listening) {
+            // Closed while the bind was pending: do not leave a listener behind.
+            listening.close(() => settle())
+            reject(new Error('hmz embed proxy was closed while starting'))
+            return
+          }
+          port = listening.address().port
+          settle()
           resolve(port)
         })
       })
     },
     close() {
+      closed = true
       tickets.clear()
       sessions.clear()
-      if (!server) return Promise.resolve()
-      const closing = new Promise((resolve) => server.close(() => resolve()))
-      server.closeAllConnections?.()
+      upstreamCookie = null
+      const current = server
       server = null
-      return closing
+      const pendingBind = bindSettled
+      if (!current) return pendingBind
+      if (!current.listening) {
+        // Bind pending or already failed: listen() closes a late success itself.
+        return pendingBind
+      }
+      return new Promise((resolve) => {
+        current.close(() => resolve())
+        current.closeAllConnections?.()
+      })
     },
   }
 }

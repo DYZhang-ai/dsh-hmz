@@ -1,19 +1,39 @@
 /**
  * The plugin's own small persistent store: one JSON file, written atomically.
  *
- * Holds only integration metadata (per-DSH-session flow selection and the
- * include-history switch). hmz run state is never copied here; hmz is the
- * authority for that.
+ * Holds only integration metadata per DSH session: the flow selection and
+ * include-history switch, the saved flow options, and the exact hmz run this
+ * session started (its binding). hmz run state itself is never copied here.
+ *
+ * Every mutation is staged on a copy, persisted (write temp + fsync + rename),
+ * and only then published; a failed write leaves the visible state unchanged.
+ * Session identifiers are validated and stored as own keys of null-prototype
+ * objects, so no identifier can reach Object.prototype.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync, openSync, fsyncSync, closeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const VERSION = 1
+const VERSION = 2
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/
+const RESERVED = new Set(['__proto__', 'constructor', 'prototype', 'hasOwnProperty', 'toString', 'valueOf'])
+
+/** @param {unknown} id */
+export function isValidSessionId(id) {
+  return typeof id === 'string' && SESSION_ID.test(id) && !RESERVED.has(id)
+}
+
+/** @param {unknown} id */
+export function assertSessionId(id) {
+  if (!isValidSessionId(id)) throw new Error('invalid session identifier')
+  return /** @type {string} */ (id)
+}
 
 /** Default selection for a session that never chose anything. */
 export function defaultSelection() {
   return { flow: null, includeHistory: true, updatedAt: null }
 }
+
+const FLOW_NAME = /^[A-Za-z0-9_.:-]{1,120}$/
 
 /**
  * Validate one selection patch coming from the Client.
@@ -25,21 +45,39 @@ export function validateSelectionPatch(patch) {
     throw new Error('selection must be an object')
   }
   const out = {}
-  if ('flow' in patch) {
+  for (const key of Object.keys(patch)) {
+    if (key !== 'flow' && key !== 'includeHistory') throw new Error(`unknown selection field: ${key}`)
+  }
+  if (Object.hasOwn(patch, 'flow')) {
     const flow = patch.flow
-    if (flow !== null && (typeof flow !== 'string' || !/^[A-Za-z0-9_.:-]{1,120}$/.test(flow))) {
+    if (flow !== null && (typeof flow !== 'string' || !FLOW_NAME.test(flow))) {
       throw new Error('flow must be null or a flow name')
     }
     out.flow = flow
   }
-  if ('includeHistory' in patch) {
+  if (Object.hasOwn(patch, 'includeHistory')) {
     if (typeof patch.includeHistory !== 'boolean') throw new Error('includeHistory must be a boolean')
     out.includeHistory = patch.includeHistory
   }
-  for (const key of Object.keys(patch)) {
-    if (key !== 'flow' && key !== 'includeHistory') throw new Error(`unknown selection field: ${key}`)
-  }
   return out
+}
+
+/** Deep copy of plain JSON into null-prototype objects. */
+function plain(value) {
+  if (Array.isArray(value)) return value.map(plain)
+  if (value !== null && typeof value === 'object') {
+    const out = Object.create(null)
+    for (const key of Object.keys(value)) {
+      if (RESERVED.has(key)) continue
+      out[key] = plain(value[key])
+    }
+    return out
+  }
+  return value
+}
+
+function emptyData() {
+  return { version: VERSION, sessions: Object.create(null) }
 }
 
 export class StateStore {
@@ -47,7 +85,7 @@ export class StateStore {
   constructor(dir) {
     this.dir = dir
     this.file = join(dir, 'state.json')
-    this.data = { version: VERSION, sessions: {} }
+    this.data = emptyData()
     this.load()
   }
 
@@ -60,26 +98,60 @@ export class StateStore {
       throw error
     }
     const parsed = JSON.parse(raw)
-    if (parsed && parsed.version === VERSION && parsed.sessions && typeof parsed.sessions === 'object') {
-      this.data = parsed
-    } else {
+    if (!parsed || (parsed.version !== VERSION && parsed.version !== 1) || !parsed.sessions || typeof parsed.sessions !== 'object') {
       throw new Error(`hmz-flow state ${this.file} has an unknown format; refusing to overwrite it`)
     }
+    const data = emptyData()
+    for (const id of Object.keys(parsed.sessions)) {
+      if (isValidSessionId(id)) data.sessions[id] = plain(parsed.sessions[id])
+    }
+    this.data = data
   }
 
-  save() {
+  /** Serialize `data` durably; throws without touching the published state. */
+  persist(data) {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 })
-    const tmp = `${this.file}.${process.pid}.tmp`
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 })
-    const fd = openSync(tmp, 'r')
-    try { fsyncSync(fd) } finally { closeSync(fd) }
-    renameSync(tmp, this.file)
+    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`
+    try {
+      writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 })
+      const fd = openSync(tmp, 'r')
+      try { fsyncSync(fd) } finally { closeSync(fd) }
+      renameSync(tmp, this.file)
+    } catch (error) {
+      try { rmSync(tmp, { force: true }) } catch {}
+      throw error
+    }
+    try {
+      const dirFd = openSync(this.dir, 'r')
+      try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
+    } catch {}
+  }
+
+  /**
+   * Stage a change to one session on a copy, persist it, then publish it.
+   * @param {string} sessionId
+   * @param {(entry: any) => any} change returns the value to give back
+   */
+  update(sessionId, change) {
+    const id = assertSessionId(sessionId)
+    const staged = { version: VERSION, sessions: plain(this.data.sessions) }
+    const entry = staged.sessions[id] ?? (staged.sessions[id] = Object.create(null))
+    const result = change(entry)
+    this.persist(staged)
+    this.data = staged
+    return result
+  }
+
+  /** @param {string} sessionId */
+  entry(sessionId) {
+    const id = assertSessionId(sessionId)
+    return Object.hasOwn(this.data.sessions, id) ? this.data.sessions[id] : undefined
   }
 
   /** @param {string} sessionId */
   selection(sessionId) {
-    const entry = this.data.sessions[sessionId]
-    return { ...defaultSelection(), ...(entry && entry.selection) }
+    const entry = this.entry(sessionId)
+    return { ...defaultSelection(), ...(entry && entry.selection ? entry.selection : {}) }
   }
 
   /**
@@ -88,9 +160,43 @@ export class StateStore {
    */
   setSelection(sessionId, patch) {
     const valid = validateSelectionPatch(patch)
-    const entry = this.data.sessions[sessionId] ?? (this.data.sessions[sessionId] = {})
-    entry.selection = { ...defaultSelection(), ...entry.selection, ...valid, updatedAt: new Date().toISOString() }
-    this.save()
-    return entry.selection
+    return this.update(sessionId, (entry) => {
+      entry.selection = plain({ ...defaultSelection(), ...entry.selection, ...valid, updatedAt: new Date().toISOString() })
+      return { ...entry.selection }
+    })
+  }
+
+  /** Saved flow options per flow name, or undefined. */
+  options(sessionId, flow) {
+    const entry = this.entry(sessionId)
+    const all = entry && entry.options
+    return all && Object.hasOwn(all, flow) ? plain(all[flow]) : undefined
+  }
+
+  setOptions(sessionId, flow, options) {
+    if (typeof flow !== 'string' || !FLOW_NAME.test(flow)) throw new Error('flow must be a flow name')
+    return this.update(sessionId, (entry) => {
+      if (!entry.options) entry.options = Object.create(null)
+      entry.options[flow] = plain({ ...options, savedAt: new Date().toISOString() })
+      return plain(entry.options[flow])
+    })
+  }
+
+  /** The exact hmz run this session started, or undefined. */
+  binding(sessionId) {
+    const entry = this.entry(sessionId)
+    return entry && entry.binding ? plain(entry.binding) : undefined
+  }
+
+  setBinding(sessionId, binding) {
+    return this.update(sessionId, (entry) => {
+      entry.binding = binding === null ? null : plain(binding)
+      return entry.binding ? plain(entry.binding) : null
+    })
+  }
+
+  /** Every session id with a binding, for reconnect after restart. */
+  boundSessions() {
+    return Object.keys(this.data.sessions).filter((id) => this.data.sessions[id].binding)
   }
 }

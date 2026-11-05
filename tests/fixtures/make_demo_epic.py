@@ -3,8 +3,13 @@
 Not part of the plugin. Used only so the preview has a real epic to embed and a
 real run snapshot (roles -> agents) to read. Usage (hmz installation python):
 
-    HUMANIZE_HOME=... TMPDIR=... <hmz-python> -I make_demo_epic.py <workspace> [agent-spec]
+    HUMANIZE_HOME=... TMPDIR=... HUMANIZE_DSH_BIN=... <hmz-python> -I make_demo_epic.py <workspace> [agent-spec] [hold-seconds]
+
+The agent spec defaults to $HMZ_TEST_AGENT, else dsh@preview-deepseek/deepseek-flash
+(a DeepSeek account provisioned in the isolated hmz home). Claude-backed specs are refused:
+real runs of this project use DeepSeek only.
 """
+import os
 import sys
 import threading
 import time
@@ -12,7 +17,9 @@ import time
 from hmz.sdk import Daemons
 
 workspace = sys.argv[1]
-spec = sys.argv[2] if len(sys.argv) > 2 else "claude/claude-haiku-4-5:low"
+spec = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("HMZ_TEST_AGENT", "dsh@preview-deepseek/deepseek-flash")
+if spec.split("@")[0].split("/")[0] == "claude":
+    raise SystemExit("refusing a Claude-backed agent for a real hmz run; use a DeepSeek-backed spec")
 hold = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0  # seconds to keep the run waiting before stopping
 daemon = Daemons().host(workspace)
 seen = []

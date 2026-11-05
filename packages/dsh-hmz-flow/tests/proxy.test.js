@@ -181,3 +181,93 @@ test('an upstream 401 on GET re-signs-in once (hmz web restarted with a new key)
     upstream.on('request', original)
   }
 })
+
+test('regression: network-path, absolute and backslash targets never leave the fixed upstream', async () => {
+  let reached = 0
+  const other = http.createServer((req, res) => { reached++; res.end('other') })
+  await new Promise((r) => other.listen(0, '127.0.0.1', r))
+  const otherPort = other.address().port
+  try {
+    const { cookie } = await signedIn()
+    const before = seen.length
+    for (const path of [`//127.0.0.1:${otherPort}/probe`, `http://127.0.0.1:${otherPort}/probe`, `/\\127.0.0.1:${otherPort}/probe`, '*']) {
+      const res = await request(proxy.port, { path, headers: { cookie } })
+      assert.equal(res.status, 400, path)
+    }
+    assert.equal(reached, 0, 'unrelated server never contacted')
+    assert.equal(seen.length, before, 'upstream not contacted either')
+    // An encoded path stays a path on the fixed upstream.
+    const ok = await request(proxy.port, { path: '/%2F%2Fexample.com/x', headers: { cookie } })
+    assert.equal(ok.status, 200)
+    assert.equal(seen.at(-1).url, '/%2F%2Fexample.com/x')
+    assert.equal(seen.at(-1).headers.host, `127.0.0.1:${upstreamPort}`)
+  } finally { await new Promise((r) => other.close(r)) }
+})
+
+test('regression: a non-loopback, non-http or credentialed upstream is refused before any request', async () => {
+  for (const origin of ['http://10.1.2.3:8080', 'https://127.0.0.1:1', 'http://user:pw@127.0.0.1:1', 'file:///etc/passwd', 'not a url']) {
+    const bad = createHmzProxy({ upstream: () => ({ origin, key: 'k' }), frameAncestors: () => [] })
+    await bad.listen()
+    try {
+      const { path } = bad.mintTicket('#/')
+      const enter = await request(bad.port, { path })
+      const cookie = enter.headers['set-cookie'][0].split(';')[0]
+      const res = await request(bad.port, { path: '/', headers: { cookie } })
+      assert.equal(res.status, 502, origin)
+      assert.match(res.body, /sign-in failed/)
+    } finally { await bad.close() }
+  }
+})
+
+test('regression: closing while listen() is pending leaves no listener', async () => {
+  const p = createHmzProxy({ upstream: () => ({ origin: 'http://127.0.0.1:1', key: 'k' }), frameAncestors: () => [] })
+  const listening = p.listen()
+  const closing = p.close()
+  await assert.rejects(listening, /closed/)
+  await closing
+  await assert.rejects(p.listen(), /closed/)
+})
+
+test('regression: close() resolves after a failed bind (EADDRINUSE)', async () => {
+  const occupied = http.createServer()
+  await new Promise((r) => occupied.listen(0, '127.0.0.1', r))
+  try {
+    const p = createHmzProxy({ port: occupied.address().port, upstream: () => ({ origin: 'http://127.0.0.1:1', key: 'k' }), frameAncestors: () => [] })
+    await assert.rejects(p.listen(), /EADDRINUSE/)
+    const closed = await Promise.race([p.close().then(() => true), new Promise((r) => setTimeout(() => r(false), 500))])
+    assert.equal(closed, true)
+  } finally { await new Promise((r) => occupied.close(r)) }
+})
+
+test('regression: hmz web restarting on a new port is followed for reads; writes are never re-sent', async () => {
+  const hits = { first: [], second: [] }
+  const make = (name) => http.createServer((req, res) => {
+    hits[name].push(`${req.method} ${req.url}`)
+    if (req.url.startsWith('/?key=')) { res.writeHead(303, { 'set-cookie': `c=${name}`, location: '/' }); return res.end() }
+    req.resume(); req.on('end', () => res.end(name))
+  })
+  const a = make('first')
+  const b = make('second')
+  await new Promise((r) => a.listen(0, '127.0.0.1', r))
+  await new Promise((r) => b.listen(0, '127.0.0.1', r))
+  let current = a.address().port
+  const p = createHmzProxy({ upstream: () => ({ origin: `http://127.0.0.1:${current}`, key: 'k' }), frameAncestors: () => [], readOnly: false })
+  await p.listen()
+  try {
+    const enter = await request(p.port, { path: p.mintTicket('#/').path })
+    const cookie = enter.headers['set-cookie'][0].split(';')[0]
+    assert.equal((await request(p.port, { path: '/x', headers: { cookie } })).body, 'first')
+    await new Promise((r) => { a.close(r); a.closeAllConnections() })
+    current = b.address().port
+    const write = await request(p.port, { method: 'POST', path: '/api/held/say', headers: { cookie, origin: `http://127.0.0.1:${p.port}`, 'content-type': 'application/json' }, body: '{}' })
+    assert.equal(write.status, 502)
+    assert.match(write.body, /not retried/)
+    assert.equal(hits.second.filter((h) => h.startsWith('POST')).length, 0, 'the write never reached the new hmz web')
+    const read = await request(p.port, { path: '/y', headers: { cookie } })
+    assert.equal(read.status, 200)
+    assert.equal(read.body, 'second')
+  } finally {
+    await p.close()
+    await new Promise((r) => { b.close(r); b.closeAllConnections() })
+  }
+})
