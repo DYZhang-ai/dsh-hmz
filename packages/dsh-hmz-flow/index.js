@@ -20,6 +20,7 @@ import { FlowController, FlowError, ACTIVE } from './lib/controller.js'
 import { InFlight, protectedCallReason, protectedRootOf } from './lib/policy.js'
 import { validateOptions } from './lib/options.js'
 import { composeTask, historySnapshot } from './lib/history.js'
+import { fallbackUserMessage, loadUserMessageFactory, noticeMessage } from './lib/message.js'
 
 export const name = 'dsh-hmz-flow'
 export const inject = ['tools', 'agents', 'connection', 'webServer', 'workingDirectory']
@@ -145,14 +146,18 @@ export function apply(ctx, rawConfig = {}) {
       try { dispose?.() } catch {}
     }
   }
+  // DSH's public message factory, resolved from the running installation.
+  let createUserMessage = fallbackUserMessage
+  const factoryLoaded = loadUserMessageFactory().then(({ create, from }) => {
+    createUserMessage = create
+    if (from === 'fallback') logger.warn('hmz-flow: @deepseek-ai/dsh-llm not resolvable; building notices with the same shape locally')
+  })
+  ctx.effect(() => () => factoryLoaded, 'hmz-flow: message factory')
   function notify(sessionId, text, summary) {
     const agent = ctx.agents.get(sessionId)
     if (!agent) return false
     try {
-      agent.followup({
-        content: [{ type: 'text', text }],
-        source: { kind: 'hmz-flow', form: 'notice', summary: summary.slice(0, 120) },
-      })
+      agent.followup(noticeMessage(createUserMessage, text, summary))
       return true
     } catch (error) {
       logger.warn('hmz-flow: notice to %s failed: %s', sessionId, error.message)
@@ -279,7 +284,9 @@ export function apply(ctx, rawConfig = {}) {
     if (!isRoot(agent)) throw new Error(`${tool} is only available to the DSH session's own agent (the leader), not a subagent`)
     return agent
   }
-  const failText = (error) => (error.outcome === 'unknown' ? `OUTCOME UNKNOWN: ${error.message}` : `REFUSED: ${error.message}`)
+  const failText = (error) => (error.accepted
+    ? `ACCEPTED BY HMZ BUT NOT RECORDED: ${error.message}`
+    : error.outcome === 'unknown' ? `OUTCOME UNKNOWN: ${error.message}` : `REFUSED: ${error.message}`)
   function register(definition) {
     ctx.effect(() => ctx.tools.register({ isConcurrencySafe: () => false, output: toolOutput, ...definition }), `hmz-flow: ${definition.name}`)
   }

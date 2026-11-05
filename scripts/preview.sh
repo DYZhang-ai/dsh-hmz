@@ -13,6 +13,15 @@
 #   HMZ_BIN       installed hmz launcher (the venv beside it supplies Python)
 #   PREVIEW_DIR   where the isolated homes, logs and demo workspace live
 #   PREVIEW_TMUX  tmux socket name (separate server, so user sessions are untouched)
+#   DSH_PORT      DSH web port (default: any free port)
+#   PREVIEW_HMZ_HOME   hmz home to use (default \$PREVIEW_DIR/hmz-home); a second preview
+#                      may share the first one's hmz accounts while keeping its own TMPDIR,
+#                      so its hmz daemon, hosts and runs stay separate
+#   PREVIEW_CREDENTIALS_FROM  a DSH home whose .credentials.yaml is copied (0600, never
+#                      printed) into a new preview's DSH home that has none yet
+#
+# Run several previews side by side with different PREVIEW_DIR / PREVIEW_TMUX / DSH_PORT.
+# URLs carrying launch tokens are written only to \$PREVIEW_DIR/private (0700), not printed.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -24,7 +33,7 @@ PREVIEW_TMUX=${PREVIEW_TMUX:-dsh-hmz-preview}
 PROFILE=${PREVIEW_PROFILE:-hmzflow}
 
 dsh_home="$PREVIEW_DIR/dsh-home"
-hmz_home="$PREVIEW_DIR/hmz-home"
+hmz_home="${PREVIEW_HMZ_HOME:-$PREVIEW_DIR/hmz-home}"
 hmz_tmp="$PREVIEW_DIR/tmp"
 demo="$PREVIEW_DIR/demo"
 logs="$PREVIEW_DIR/logs"
@@ -36,6 +45,10 @@ tm() { tmux -L "$PREVIEW_TMUX" "$@"; }
 prepare() {
   mkdir -p "$dsh_home" "$hmz_home" "$hmz_tmp" "$demo" "$logs" "$PREVIEW_DIR/private" "$profile_dir/node_modules/@dsh-hmz"
   chmod 700 "$PREVIEW_DIR/private" "$hmz_tmp"
+  if [ -n "${PREVIEW_CREDENTIALS_FROM:-}" ] && [ ! -e "$dsh_home/.credentials.yaml" ] && [ -f "$PREVIEW_CREDENTIALS_FROM/.credentials.yaml" ]; then
+    (umask 077; cp "$PREVIEW_CREDENTIALS_FROM/.credentials.yaml" "$dsh_home/.credentials.yaml")
+    chmod 600 "$dsh_home/.credentials.yaml"
+  fi
   [ -d "$demo/.git" ] || (cd "$demo" && git init -q && echo "# demo" > README.md && git add README.md && git -c user.email=demo@example -c user.name=demo commit -qm init)
   hmz_python="$(cd "$(dirname "$HMZ_BIN")/.." && pwd -P)/venv/bin/python"
   [ -x "$hmz_python" ] || { echo "no hmz venv python at $hmz_python" >&2; exit 1; }
@@ -89,8 +102,8 @@ start() {
   url=$(grep -o 'http://[^ ]*token=[^ ]*' "$logs/dsh.out" | head -1 || true)
   [ -n "$url" ] || { echo "DSH did not print its URL; see $logs/dsh.out and $logs/dsh.err" >&2; exit 1; }
   umask 077; printf '%s\n' "$url" > "$PREVIEW_DIR/private/dsh-url"
-  echo "DSH preview URL (contains a launch token; also in $PREVIEW_DIR/private/dsh-url):"
-  echo "  $url"
+  echo "DSH preview: http://127.0.0.1:$(printf '%s' "$url" | sed -E 's#^http://[^:]+:([0-9]+)/.*#\1#')/"
+  echo "  open the tokenized address stored in $PREVIEW_DIR/private/dsh-url (0600)"
   echo "Demo workspace: $demo"
 }
 

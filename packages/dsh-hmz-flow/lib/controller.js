@@ -26,9 +26,16 @@ import { startArguments } from './options.js'
 export const ACTIVE = Object.freeze(new Set(['starting', 'running', 'stopping', 'unknown']))
 
 export class FlowError extends Error {
-  constructor(message, outcome = 'refused') {
+  /**
+   * @param {string} message
+   * @param {'refused'|'unknown'} outcome
+   * @param {{accepted?: boolean}} [extra] accepted: hmz accepted the action but
+   *   recording it locally failed; the outcome of the whole step is unknown.
+   */
+  constructor(message, outcome = 'refused', extra = {}) {
     super(message)
     this.outcome = outcome
+    this.accepted = extra.accepted === true
   }
 }
 
@@ -181,15 +188,24 @@ export class FlowController {
           this.saveBinding(sessionId, { ...intent, phase: 'unknown', unknownWhy: error.message, unknownSince: new Date().toISOString() })
           throw new FlowError(`the start's outcome is unknown (${error.message}). It was NOT re-sent. Write protection stays on; hmz_flow_status checks whether hmz started it.`, 'unknown')
         }
-        const binding = {
+        const accepted = {
           ...intent, ...answer.binding, phase: 'running', startedAt: new Date().toISOString(),
           // Accepted, but hmz did not show this exact run yet: only its host and run
           // number are known; epic/roles are filled in by a lookup by request id.
           incomplete: answer.bindingComplete === false,
           incompleteWhy: answer.bindingComplete === false ? answer.incompleteWhy : undefined,
         }
-        this.saveBinding(sessionId, binding)
-        return { binding, history }
+        try {
+          this.saveBinding(sessionId, accepted)
+        } catch (error) {
+          // hmz started it; only our record failed. The persisted `starting` intent
+          // keeps protection on and becomes `unknown` on restart, where a lookup by
+          // request id binds it. Nothing is re-sent.
+          throw new FlowError(
+            `hmz accepted the start (run #${accepted.run}${accepted.epicName ? `, epic ${accepted.epicName}` : ''}) but recording it locally failed (${error.message}). It was NOT re-sent; write protection stays on; check hmz_flow_status.`,
+            'unknown', { accepted: true })
+        }
+        return { binding: accepted, history }
       } finally {
         this.fencing.delete(sessionId)
         this.refreshProtection(sessionId)
@@ -250,9 +266,14 @@ export class FlowController {
       if (binding.phase === 'stopping') return { accepted: true, already: 'stopping' }
       try {
         const result = await this.deps.adapter.request('stop', { workspace: binding.workspace, expect: this.expectOf(binding) })
-        this.saveBinding(sessionId, { ...binding, phase: 'stopping', stopRequestedAt: new Date().toISOString() })
+        try {
+          this.saveBinding(sessionId, { ...binding, phase: 'stopping', stopRequestedAt: new Date().toISOString() })
+        } catch (error) {
+          throw new FlowError(`hmz accepted the stop of run #${binding.run} but recording it locally failed (${error.message}). It was NOT re-sent; protection stays on until the end is verified.`, 'unknown', { accepted: true })
+        }
         return result
       } catch (error) {
+        if (error instanceof FlowError) throw error
         if (error.outcome === 'unknown') {
           this.saveBinding(sessionId, { ...binding, stopUnknown: error.message })
           throw new FlowError(`the stop's outcome is unknown (${error.message}); it was NOT re-sent; protection stays on`, 'unknown')

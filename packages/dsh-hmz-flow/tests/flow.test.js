@@ -381,3 +381,25 @@ test('environment roles: required non-auto env needs a runtime; envs validated a
   assert.deepEqual(ok.args.envs, { box: 'local' })
   assert.throws(() => validateOptions({ envs: { box: 3 } }))
 })
+
+test('regression: hmz accepted but the local record failed — reported as accepted/unknown, protected, never re-sent', async () => {
+  let starts = 0
+  let stops = 0
+  const h = harness(async (op) => {
+    if (op === 'start') { starts++; return { binding: BOUND } }
+    if (op === 'stop') { stops++; return { accepted: true } }
+    throw new Error(op)
+  })
+  const realSet = h.store.setBinding.bind(h.store)
+  let failPhase = 'running'
+  h.store.setBinding = (id, b) => { if (b?.phase === failPhase) throw new Error('ENOSPC'); return realSet(id, b) }
+  await assert.rejects(h.ctl.start('S', startReq()), (e) => e.outcome === 'unknown' && e.accepted && /accepted the start.*NOT re-sent/.test(e.message))
+  assert.equal(starts, 1)
+  assert.equal(h.store.binding('S').phase, 'starting', 'the persisted intent keeps protection')
+  assert.equal(h.ctl.isProtected('S'), true)
+  failPhase = 'stopping'
+  realSet('S', { ...h.store.binding('S'), ...BOUND, phase: 'running' })
+  await assert.rejects(h.ctl.stop('S'), (e) => e.outcome === 'unknown' && e.accepted && /accepted the stop/.test(e.message))
+  assert.equal(stops, 1)
+  assert.equal(h.ctl.isProtected('S'), true)
+})
