@@ -1,0 +1,352 @@
+/*
+ * Browser half of the DSH x hmz flow integration. Plain JS lazy factory; React
+ * comes from the page's module table. Talks to the Host only through the
+ * authenticated exact route `api/hmz-flow/rpc` (document-relative, as DSH's
+ * own RPC does).
+ */
+window.__ModuleLoader__.load({
+  id: '@dsh-hmz/flow',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const NS = 'hmz-flow'
+    const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+    const zh = {
+      'menu.section': 'Flow',
+      'menu.cancel': '取消 flow 模式',
+      'menu.cancel.desc': '回到普通 DSH 对话',
+      'menu.selected': '已选',
+      'button.options': 'flow选项',
+      'panel.title': 'Flow 选项',
+      'panel.flow': 'Flow',
+      'panel.history': '附带前文',
+      'panel.history.desc': '启动 flow 时附带本会话可见的用户/助手消息快照（不含系统提示、工具原始日志）。',
+      'panel.cancel': '取消 flow 模式',
+      'panel.close': '关闭',
+      'panel.roles': '角色',
+      'panel.loading': '读取中…',
+      'panel.later': '角色 CLI/账号/模型/effort 与预算编辑将在下一版本提供；当前只读显示 hmz 的声明。',
+      'panel.saved': '已保存',
+      'panel.error': '错误',
+      'view.label': 'Flow',
+      'view.loading': '正在连接 hmz…',
+      'view.reload': '重新连接',
+      'view.none': '当前目录没有 hmz 运行；显示 hmz 首页。',
+    }
+    const en = {
+      'menu.section': 'Flow',
+      'menu.cancel': 'Leave flow mode',
+      'menu.cancel.desc': 'Back to ordinary DSH conversation',
+      'menu.selected': 'selected',
+      'button.options': 'Flow options',
+      'panel.title': 'Flow options',
+      'panel.flow': 'Flow',
+      'panel.history': 'Include history',
+      'panel.history.desc': 'When a flow starts, attach a snapshot of the visible user/assistant messages (no system prompt, no raw tool logs).',
+      'panel.cancel': 'Leave flow mode',
+      'panel.close': 'Close',
+      'panel.roles': 'Roles',
+      'panel.loading': 'Loading…',
+      'panel.later': 'Editing role CLI/account/model/effort and budget comes in the next version; hmz declarations are shown read-only.',
+      'panel.saved': 'Saved',
+      'panel.error': 'Error',
+      'view.label': 'Flow',
+      'view.loading': 'Connecting to hmz…',
+      'view.reload': 'Reconnect',
+      'view.none': 'No hmz run in this directory; showing the hmz home.',
+    }
+
+    // ------------------------------------------------------------ Host RPC
+    async function rpc(op, sessionId, extra) {
+      const response = await fetch('api/hmz-flow/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ op, sessionId, ...extra }),
+      })
+      let body = null
+      try { body = await response.json() } catch { /* fallthrough */ }
+      if (!response.ok || !body || body.ok !== true) {
+        const why = body && body.error ? body.error : `HTTP ${response.status}`
+        throw new Error(why)
+      }
+      return body.result
+    }
+
+    // ---------------------------------------------- per-session client cache
+    /** sessionId -> { selection, open, flows, error, listeners:Set, loading } */
+    const sessions = new Map()
+    function entry(sessionId) {
+      let one = sessions.get(sessionId)
+      if (!one) {
+        one = { selection: null, open: false, flows: null, error: null, saving: false, listeners: new Set(), version: 0, loading: null }
+        sessions.set(sessionId, one)
+      }
+      return one
+    }
+    function emit(one) {
+      one.version += 1
+      for (const listener of [...one.listeners]) listener()
+    }
+    function load(sessionId) {
+      const one = entry(sessionId)
+      if (one.loading) return one.loading
+      one.loading = rpc('getSelection', sessionId).then(
+        (selection) => { one.selection = selection; one.error = null; emit(one) },
+        (error) => { one.error = error.message; emit(one); one.loading = null },
+      )
+      return one.loading
+    }
+    async function save(sessionId, patch) {
+      const one = entry(sessionId)
+      one.saving = true
+      emit(one)
+      try {
+        one.selection = await rpc('setSelection', sessionId, { selection: patch })
+        one.error = null
+      } catch (error) {
+        one.error = error.message
+      } finally {
+        one.saving = false
+        emit(one)
+      }
+    }
+    function setOpen(sessionId, open) {
+      const one = entry(sessionId)
+      one.open = open
+      emit(one)
+    }
+    function useSessionEntry(sessionId) {
+      const one = entry(sessionId)
+      React.useSyncExternalStore(
+        (listener) => { one.listeners.add(listener); return () => one.listeners.delete(listener) },
+        () => one.version,
+      )
+      React.useEffect(() => { if (sessionId) void load(sessionId) }, [sessionId])
+      return one
+    }
+
+    // --------------------------------------------------------------- styles
+    const css = `
+.hmzf-btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:none;border-radius:var(--dsw-radius-md,8px);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.hmzf-btn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.hmzf-btn[aria-expanded="true"]{outline:1px solid var(--dsw-alias-border-l2)}
+.hmzf-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-secondary)}
+.hmzf-panel{margin:0 0 8px;padding:12px 14px;border:0.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.hmzf-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-weight:500}
+.hmzf-row{display:flex;align-items:center;gap:10px;padding:6px 0}
+.hmzf-row label{flex:1}
+.hmzf-desc{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.hmzf-select{height:28px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l2);background:transparent;color:inherit;font:inherit}
+.hmzf-switch{position:relative;width:34px;height:20px;border-radius:10px;border:none;cursor:pointer;background:var(--dsw-alias-border-l2);flex:none}
+.hmzf-switch[aria-checked="true"]{background:var(--dsw-alias-label-primary)}
+.hmzf-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-module-platform,#fff);transition:left .15s}
+.hmzf-switch[aria-checked="true"]::after{left:16px}
+.hmzf-roles{margin:4px 0 0;padding:0;list-style:none}
+.hmzf-roles li{padding:2px 0;color:var(--dsw-alias-label-secondary)}
+.hmzf-link{border:none;background:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;padding:0 4px}
+.hmzf-error{color:var(--dsw-alias-label-danger,#c33)}
+.hmzf-view{display:flex;flex-direction:column;height:100%;min-height:0;flex:1}
+.hmzf-bar{display:flex;align-items:center;gap:8px;padding:4px 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.hmzf-frame{flex:1;width:100%;min-height:480px;border:0;background:var(--dsw-alias-bg-module-platform)}
+`
+    function Style() { return h('style', null, css) }
+
+    // ----------------------------------------------- composer: options button
+    function makeOptionsButton(t) {
+      return function HmzFlowOptionsButton(props) {
+        const sessionId = props.sessionId
+        const one = useSessionEntry(sessionId)
+        const selection = one.selection
+        if (!sessionId || !selection || !selection.flow) return null
+        return h(React.Fragment, null,
+          h(Style),
+          h('button', {
+            type: 'button',
+            className: 'hmzf-btn',
+            'data-hmz-flow': 'options',
+            'aria-expanded': String(one.open),
+            title: `${t('button.options')} · ${selection.flow}`,
+            onClick: () => setOpen(sessionId, !one.open),
+          }, h('span', { className: 'hmzf-dot', 'aria-hidden': true }), `${t('button.options')} · ${selection.flow}`),
+        )
+      }
+    }
+
+    // ------------------------------------------------- composer: options panel
+    function makePanel(t) {
+      return function HmzFlowOptionsPanel(props) {
+        const sessionId = props.sessionId
+        const one = useSessionEntry(sessionId)
+        const [declared, setDeclared] = React.useState(null)
+        const [flows, setFlows] = React.useState(null)
+        const [problem, setProblem] = React.useState(null)
+        const selection = one.selection
+        const flow = selection && selection.flow
+        React.useEffect(() => {
+          if (!one.open || !flow) return undefined
+          let live = true
+          setDeclared(null)
+          setProblem(null)
+          rpc('flow', sessionId, { name: flow }).then((d) => { if (live) setDeclared(d) }, (e) => { if (live) setProblem(e.message) })
+          rpc('flows', sessionId).then((d) => { if (live) setFlows(d.flows) }, () => {})
+          return () => { live = false }
+        }, [one.open, flow, sessionId])
+        if (!sessionId || !one.open || !flow) return null
+        const history = selection.includeHistory !== false
+        return h('section', { className: 'hmzf-panel', 'data-hmz-flow': 'panel', 'aria-label': t('panel.title') },
+          h(Style),
+          h('div', { className: 'hmzf-head' },
+            h('span', null, t('panel.title')),
+            h('span', null,
+              one.saving ? h('span', { className: 'hmzf-desc' }, '…') : null,
+              h('button', { type: 'button', className: 'hmzf-link', onClick: () => { void save(sessionId, { flow: null }); setOpen(sessionId, false) } }, t('panel.cancel')),
+              h('button', { type: 'button', className: 'hmzf-link', onClick: () => setOpen(sessionId, false) }, t('panel.close')),
+            ),
+          ),
+          h('div', { className: 'hmzf-row' },
+            h('label', { htmlFor: `hmzf-flow-${sessionId}` }, t('panel.flow')),
+            h('select', {
+              id: `hmzf-flow-${sessionId}`,
+              className: 'hmzf-select',
+              value: flow,
+              'data-hmz-flow': 'flow-select',
+              onChange: (event) => { void save(sessionId, { flow: event.target.value }) },
+            }, (flows || [{ name: flow }]).map((f) => h('option', { key: f.name, value: f.name }, f.name))),
+          ),
+          h('div', { className: 'hmzf-row' },
+            h('label', { id: `hmzf-hist-${sessionId}` },
+              h('div', null, t('panel.history')),
+              h('div', { className: 'hmzf-desc' }, t('panel.history.desc'))),
+            h('button', {
+              type: 'button',
+              role: 'switch',
+              className: 'hmzf-switch',
+              'aria-checked': String(history),
+              'aria-labelledby': `hmzf-hist-${sessionId}`,
+              'data-hmz-flow': 'history-switch',
+              onClick: () => { void save(sessionId, { includeHistory: !history }) },
+            }),
+          ),
+          declared
+            ? h('div', null,
+              h('div', { className: 'hmzf-desc' }, declared.description),
+              h('div', { style: { marginTop: 6 } }, t('panel.roles')),
+              h('ul', { className: 'hmzf-roles' }, declared.agents.filter((a) => !a.auto).map((a) => {
+                const remembered = declared.remembered && declared.remembered.agents ? declared.remembered.agents[a.name] : ''
+                return h('li', { key: a.name }, `${a.name}${a.required ? '' : ' (optional)'} — ${remembered || a.clis.join(' / ')}`)
+              })),
+              h('div', { className: 'hmzf-desc', style: { marginTop: 6 } }, t('panel.later')))
+            : h('div', { className: 'hmzf-desc' }, problem ? `${t('panel.error')}: ${problem}` : t('panel.loading')),
+          one.error ? h('div', { className: 'hmzf-error' }, `${t('panel.error')}: ${one.error}`) : null,
+        )
+      }
+    }
+
+    // ------------------------------------------------------------ Flow view
+    function makeView(t) {
+      return function HmzFlowView(props) {
+        const sessionId = props.sessionId
+        const [embed, setEmbed] = React.useState(null)
+        const [problem, setProblem] = React.useState(null)
+        const [attempt, setAttempt] = React.useState(0)
+        React.useEffect(() => {
+          if (!sessionId) return undefined
+          let live = true
+          setEmbed(null)
+          setProblem(null)
+          rpc('embed', sessionId).then((e) => { if (live) setEmbed(e) }, (e) => { if (live) setProblem(e.message) })
+          return () => { live = false }
+        }, [sessionId, attempt])
+        const host = LOOPBACK.has(location.hostname) ? location.hostname : '127.0.0.1'
+        const src = embed ? `${location.protocol === 'https:' ? 'http:' : 'http:'}//${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${embed.port}${embed.path}` : null
+        const status = embed && embed.status
+        const note = status && status.held === false ? t('view.none')
+          : status && status.state ? `hmz: ${status.state}${status.run ? ` · run #${status.run}` : ''}${status.flow ? ` · ${status.flow}` : ''}${status.epicName ? ` · ${status.epicName}` : ''}`
+            : ''
+        return h('div', { className: 'hmzf-view', 'data-hmz-flow': 'view' },
+          h(Style),
+          h('div', { className: 'hmzf-bar' },
+            h('span', { style: { flex: 1 } }, problem ? h('span', { className: 'hmzf-error' }, problem) : (embed ? note : t('view.loading'))),
+            h('button', { type: 'button', className: 'hmzf-link', onClick: () => setAttempt((n) => n + 1) }, t('view.reload'))),
+          src ? h('iframe', {
+            key: src,
+            className: 'hmzf-frame',
+            src,
+            title: 'hmz',
+            'data-hmz-flow': 'frame',
+            referrerPolicy: 'no-referrer',
+          }) : null,
+        )
+      }
+    }
+
+    // ------------------------------------------------ '/' menu: Flow group
+    function makeSource(ctx, t) {
+      const cache = new Map() // sessionId -> { at, flows }
+      async function flowsOf(sessionId) {
+        const hit = cache.get(sessionId)
+        if (hit && Date.now() - hit.at < 30000) return hit.flows
+        const result = await rpc('flows', sessionId)
+        cache.set(sessionId, { at: Date.now(), flows: result.flows })
+        return result.flows
+      }
+      function consume(sessionId, span) {
+        const actx = ctx.sessions && ctx.sessions.scope ? ctx.sessions.scope(sessionId) : undefined
+        if (actx) actx.bail(actx, 'slash/input-consume-token', { guard: { kind: 'span', span } })
+      }
+      return {
+        trigger: '/',
+        name: 'hmz-flow',
+        order: 50,
+        async candidates(session, req) {
+          if (req.position !== 'leading') return []
+          let flows
+          try { flows = await flowsOf(session.sessionId) } catch { return [] }
+          const q = req.query.trim().toLowerCase()
+          const selected = entry(session.sessionId).selection
+          const rows = flows
+            .filter((f) => !q || f.name.toLowerCase().includes(q) || 'flow'.startsWith(q) || (f.about || '').toLowerCase().includes(q))
+            .map((f) => ({
+              name: f.name,
+              description: `${selected && selected.flow === f.name ? `[${t('menu.selected')}] ` : ''}${f.about || ''}`,
+              section: t('menu.section'),
+              value: f.name,
+            }))
+          if (selected && selected.flow && (!q || 'flow'.startsWith(q) || t('menu.cancel').toLowerCase().includes(q))) {
+            rows.push({ name: 'flow-off', label: t('menu.cancel'), description: t('menu.cancel.desc'), section: t('menu.section'), value: '' })
+          }
+          return rows
+        },
+        onPick(pick) {
+          if (pick.action !== 'pick') return undefined
+          const sessionId = pick.session.sessionId
+          consume(sessionId, pick.span)
+          const flow = pick.candidate.value || null
+          void save(sessionId, { flow }).then(() => { if (flow) setOpen(sessionId, true) })
+          if (!flow) setOpen(sessionId, false)
+          return 'handled'
+        },
+      }
+    }
+
+    return {
+      inject: ['slots', 'locale', 'inputTriggers', 'sessions'],
+      apply(ctx) {
+        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'hmz-flow: dictionaries')
+        const t = ctx.locale.bind(NS)
+        ctx.effect(() => ctx.inputTriggers.registerSource(makeSource(ctx, t)), 'hmz-flow: / source')
+        ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+          name: 'conversation.input.left', id: 'hmz-flow-options', order: 50, locale: NS,
+        }, makeOptionsButton(t)))
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: 'hmz-flow-panel', order: 50, locale: NS,
+        }, makePanel(t)))
+        ctx.slots.inject('conversation.view', () => ctx.slots.register({
+          name: 'conversation.view', id: 'hmz-flow', order: 20, locale: NS,
+          label: () => t('view.label'),
+        }, makeView(t)))
+      },
+    }
+  },
+})

@@ -1,0 +1,7 @@
+# Inserted by the @dsh-hmz/flow bundle. The profile's own patch layer (or a
+# --patch overlay) supplies the machine-specific config: python / hmzBin,
+# hmzWebUrlFile and, optionally, stateDir and hmzEnv.
+- insert:
+    - id: dsh-hmz-flow
+      name: '@dsh-hmz/flow'
+      config: {}

@@ -1,0 +1,8 @@
+.preview/
+node_modules/
+*.pyc
+__pycache__/
+*.key
+*.token
+credentials*
+.credentials*
