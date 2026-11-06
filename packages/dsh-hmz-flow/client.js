@@ -32,6 +32,33 @@ window.__ModuleLoader__.load({
       'panel.loading': '读取中…',
       'panel.later': '角色与预算会在启动时冻结；leader 不能修改这些选项。',
       'panel.saved': '已保存',
+      'observer.toggle': '流程提醒',
+      'observer.toggle.desc': 'flow 运行时，偶尔查看它的工作记录：你值得知道的知识或设计取舍，以及有记录为证的执行问题（反复出错、与最新要求不符），会在输入框上方提示一条。只给你看，不会发消息给 flow 或改变任务。每个任务最多查看 6 次，使用秘书当前的模型，费用另计，不计入 flow 预算。',
+      'observer.aria': '流程提醒',
+      'observer.tag.know': '值得知道',
+      'observer.tag.heads': '请注意',
+      'observer.expand': '展开说明',
+      'observer.collapse': '收起',
+      'observer.known': '知道了',
+      'observer.dismiss': '忽略',
+      'observer.off': '关闭提醒',
+      'observer.evidence': '依据（来自 flow 的工作记录）：',
+      'observer.source': '{session} · 第 {record} 条记录 · {kind}',
+      'observer.kind.tool': '工具 {tool}',
+      'observer.kind.toolError': '工具 {tool}（报错）',
+      'observer.kind.instruction': '收到的指令',
+      'observer.kind.message': '消息',
+      'observer.status.off': '提醒已关闭。',
+      'observer.status.idle': '已开启；启动 flow 后才会查看。',
+      'observer.status.count': '（本任务已检查 {n}/{max} 次）',
+      'observer.status.limit': '本任务的检查次数已用完，不再查看。',
+      'observer.status.checking': '正在查看最新的工作记录…',
+      'observer.status.notRunning': '这个任务没有在运行，不再查看。',
+      'observer.status.noModel': '秘书当前没有可用的模型，暂时无法查看。',
+      'observer.status.timeout': '上一次查看超时。',
+      'observer.status.failed': '上一次查看没有成功。',
+      'observer.status.watching': '已开启：有新的工作记录时才查看，没有值得说的就不打扰。',
+      'observer.partial': '这条提醒只基于最近的一部分记录。',
       'panel.modelNotInDsh': '提示：{model} 不在当前 DSH 官方目录（deepseek-official）中，已按原样保留；该目录现有：{models}。hmz 自带的模型列表可能过时；若这个账号用的是自定义 endpoint，这个模型仍可能可用。',
       'stop.button': '停止 flow',
       'stop.stopping': '正在停止…',
@@ -120,6 +147,33 @@ window.__ModuleLoader__.load({
       'panel.loading': 'Loading…',
       'panel.later': 'Roles and budget are frozen at start; the leader cannot change these options.',
       'panel.saved': 'Saved',
+      'observer.toggle': 'Flow reminders',
+      'observer.toggle.desc': 'While a flow runs, its work record is looked at now and then: knowledge or design tradeoffs worth knowing, and execution problems the record shows (repeated errors, not matching the latest request) appear as one short reminder above the composer. Only you see it; nothing is sent to the flow and the task is not changed. At most 6 looks per run, using the secretary\'s current model; the cost is separate from the flow budget.',
+      'observer.aria': 'Flow reminder',
+      'observer.tag.know': 'Worth knowing',
+      'observer.tag.heads': 'Heads up',
+      'observer.expand': 'Explain',
+      'observer.collapse': 'Collapse',
+      'observer.known': 'Got it',
+      'observer.dismiss': 'Dismiss',
+      'observer.off': 'Turn reminders off',
+      'observer.evidence': 'Based on (from the flow\'s work record):',
+      'observer.source': '{session} · record {record} · {kind}',
+      'observer.kind.tool': 'tool {tool}',
+      'observer.kind.toolError': 'tool {tool} (error)',
+      'observer.kind.instruction': 'instruction received',
+      'observer.kind.message': 'message',
+      'observer.status.off': 'Reminders are off.',
+      'observer.status.idle': 'On; looks once a flow has started.',
+      'observer.status.count': '(checked {n} of {max} times for this run)',
+      'observer.status.limit': 'All checks for this run are used; no more looking.',
+      'observer.status.checking': 'Looking at the latest work record…',
+      'observer.status.notRunning': 'This run is not running; no more looking.',
+      'observer.status.noModel': 'The secretary has no model available right now, so nothing can be looked at.',
+      'observer.status.timeout': 'The last look timed out.',
+      'observer.status.failed': 'The last look did not succeed.',
+      'observer.status.watching': 'On: looks only when there is new work, and stays quiet unless something matters.',
+      'observer.partial': 'This reminder is based on only the latest part of the record.',
       'panel.modelNotInDsh': 'Note: {model} is not in the current DSH official catalog (deepseek-official); kept as entered. That catalog has: {models}. hmz\'s own model list may be outdated; with a custom endpoint on this account the model may still work.',
       'stop.button': 'Stop flow',
       'stop.stopping': 'Stopping…',
@@ -341,6 +395,11 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
 .hmzf-save{height:28px;padding:0 14px;border-radius:6px;border:0.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-module-platform,#fff);cursor:pointer;font:inherit}
 .hmzf-stop{height:26px;margin-left:8px;padding:0 10px;border-radius:6px;border:0.5px solid var(--dsw-alias-label-danger,#c33);background:transparent;color:var(--dsw-alias-label-danger,#c33);font:inherit;font-size:12px;cursor:pointer}
 .hmzf-stop:disabled{opacity:.6;cursor:default}
+.hmzf-observer{border-color:var(--dsw-alias-border-l2)}
+.hmzf-obs-head{display:flex;align-items:baseline;gap:8px}
+.hmzf-obs-title{flex:1;min-width:0;color:var(--dsw-alias-label-primary)}
+.hmzf-obs-detail{margin:6px 0;white-space:pre-wrap;word-break:break-word}
+.hmzf-obs-ev pre{white-space:pre-wrap;word-break:break-word;margin:2px 0 6px;padding:4px 8px;border-radius:6px;background:var(--dsw-alias-bg-module-platform);font-family:var(--dsw-font-mono,monospace);font-size:12px;max-height:160px;overflow:auto}
 .hmzf-bound{padding:6px 8px;margin-bottom:6px;border-radius:8px;border:0.5px solid var(--dsw-alias-border-l2)}
 .hmzf-active{border-color:var(--dsw-alias-label-secondary)}
 .hmzf-view{display:flex;flex-direction:column;height:100%;min-height:0;flex:1}
@@ -432,7 +491,15 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
     }
 
     function makePanel(t) {
+      const Panel = makePanelBody(t)
+      // One panel per DSH session: nothing (state or a late reply) carries over.
       return function HmzFlowOptionsPanel(props) {
+        return props.sessionId ? h(Panel, { key: props.sessionId, sessionId: props.sessionId }) : null
+      }
+    }
+
+    function makePanelBody(t) {
+      return function HmzFlowOptionsPanelBody(props) {
         const sessionId = props.sessionId
         const one = useSessionEntry(sessionId)
         const [declared, setDeclared] = React.useState(null)
@@ -442,6 +509,19 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         const [form, setForm] = React.useState(null)
         const [problem, setProblem] = React.useState(null)
         const [note, setNote] = React.useState('')
+        const [observing, setObserving] = React.useState(null) // observer view, or null until read
+        // Observer reads are numbered: only the newest reply is applied, and
+        // nothing after this panel is gone (each session has its own panel).
+        const obsSeq = React.useRef(0)
+        const obsAlive = React.useRef(true)
+        React.useEffect(() => { obsAlive.current = true; return () => { obsAlive.current = false; obsSeq.current += 1 } }, [])
+        const loadObserver = React.useCallback(async () => {
+          const seq = ++obsSeq.current
+          try {
+            const v = await rpc('observerGet', sessionId)
+            if (obsAlive.current && seq === obsSeq.current) setObserving(v)
+          } catch { /* the status line keeps the last known state */ }
+        }, [sessionId])
         const selection = one.selection
         const flow = selection && selection.flow
         React.useEffect(() => {
@@ -456,7 +536,8 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
           // The models DSH itself serves: what an hmz `dsh` agent actually runs.
           rpc('dshModels', sessionId).then((d) => { if (live) setDshModels(d.models || []) }, () => { if (live) setDshModels([]) })
           rpc('flows', sessionId).then((d) => { if (live) setFlows(d.flows) }, () => {})
-          return () => { live = false }
+          void loadObserver()
+          return () => { live = false; obsSeq.current += 1 }
         }, [one.open, flow, sessionId])
         React.useEffect(() => {
           if (!form || !dshModels || !dshModels.length) return
@@ -466,9 +547,9 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         }, [form, dshModels])
         React.useEffect(() => {
           if (!one.open || !sessionId) return undefined
-          const timer = setInterval(() => { void refresh(sessionId) }, 5000)
+          const timer = setInterval(() => { void refresh(sessionId); void loadObserver() }, 5000)
           return () => clearInterval(timer)
-        }, [one.open, sessionId])
+        }, [one.open, sessionId, loadObserver])
         if (!sessionId || !one.open || !flow) return null
         const history = selection.includeHistory !== false
         const binding = selection.binding
@@ -547,6 +628,29 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
               type: 'button', role: 'switch', className: 'hmzf-switch', 'aria-checked': String(history),
               'aria-labelledby': `hmzf-hist-${sessionId}`, 'data-hmz-flow': 'history-switch',
               onClick: () => { void save(sessionId, { includeHistory: !history }) },
+            }),
+          ),
+          h('div', { className: 'hmzf-row' },
+            h('label', { id: `hmzf-obs-${sessionId}` },
+              h('div', null, t('observer.toggle')),
+              h('div', { className: 'hmzf-desc' }, t('observer.toggle.desc')),
+              observing ? h('div', { className: observerStatusIsProblem(observing) ? 'hmzf-error' : 'hmzf-desc', 'data-hmz-flow': 'observer-status' }, observerStatusText(t, observing)) : null),
+            h('button', {
+              type: 'button', role: 'switch', className: 'hmzf-switch', 'aria-checked': String(!!observing && observing.enabled !== false),
+              'aria-labelledby': `hmzf-obs-${sessionId}`, 'data-hmz-flow': 'observer-switch', disabled: observing === null,
+              onClick: () => {
+                const next = observing.enabled === false
+                // Shown at once; any read still on its way is now stale.
+                const seq = ++obsSeq.current
+                setObserving((v) => ({ ...v, enabled: next, checking: next && v.checking }))
+                rpc('observerSet', sessionId, { enabled: next }).then(
+                  () => { if (obsAlive.current) void loadObserver() },
+                  (e) => {
+                    if (!obsAlive.current) return
+                    if (seq === obsSeq.current) setNote(`${t('panel.error')}: ${e.message}`)
+                    void loadObserver()
+                  })
+              },
             }),
           ),
           declared && form ? h('div', { 'data-hmz-flow': 'form' },
@@ -739,6 +843,109 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         h(NativeFrame, { key: selected.runId, t, sessionId, run: selected }))
     }
 
+    /** One plain line saying what the reminders are doing for this session. */
+    function observerStatusText(t, v) {
+      if (v.enabled === false) return t('observer.status.off')
+      if (!v.runId) return t('observer.status.idle')
+      const counted = fmt(t('observer.status.count'), { n: v.attempts, max: v.maxAttempts })
+      if (v.limited) return `${t('observer.status.limit')} ${counted}`
+      if (v.checking) return `${t('observer.status.checking')} ${counted}`
+      if (!v.current || v.phase !== 'running') return `${t('observer.status.notRunning')} ${counted}`
+      const kind = v.status && v.status.kind
+      if (kind === 'no-model') return t('observer.status.noModel')
+      if (kind === 'timeout') return `${t('observer.status.timeout')} ${counted}`
+      if (kind === 'error') return `${t('observer.status.failed')} ${counted}`
+      return `${t('observer.status.watching')} ${counted}`
+    }
+    function observerStatusIsProblem(v) {
+      const kind = v.status && v.status.kind
+      return v.enabled !== false && !v.checking && (kind === 'no-model' || kind === 'timeout' || kind === 'error')
+    }
+
+    /**
+     * The flow observer's note for the current run, above the composer: a short
+     * reminder that can be expanded, marked known, dismissed, or turned off.
+     * One card per DSH session (keyed); replies are applied only if they are the
+     * newest asked for this session, so a late reply never shows another
+     * session's or an older run's note. Text is rendered as text; nothing here
+     * talks to the flow.
+     */
+    function makeObserverCard(t) {
+      const Card = makeObserverCardBody(t)
+      return function HmzFlowObserverCard(props) {
+        return props.sessionId ? h(Card, { key: props.sessionId, sessionId: props.sessionId }) : null
+      }
+    }
+
+    function makeObserverCardBody(t) {
+      return function HmzFlowObserverCardBody({ sessionId }) {
+        const [view, setView] = React.useState(null)
+        const [expanded, setExpanded] = React.useState(false)
+        const [problem, setProblem] = React.useState('')
+        const seq = React.useRef(0)
+        const alive = React.useRef(true)
+        const load = React.useCallback(async () => {
+          const mine = ++seq.current
+          try {
+            const got = await rpc('observerGet', sessionId)
+            if (!alive.current || mine !== seq.current) return
+            setView(got); setProblem('')
+          } catch (e) {
+            if (alive.current && mine === seq.current) setProblem(e.message)
+          }
+        }, [sessionId])
+        React.useEffect(() => {
+          alive.current = true
+          void load()
+          const timer = setInterval(() => { void load() }, 8000)
+          return () => { alive.current = false; seq.current += 1; clearInterval(timer) }
+        }, [load])
+        const open = view && view.current && view.enabled ? view.notes.filter((x) => x.status === 'open') : []
+        const n = open.length ? open[open.length - 1] : null
+        const noteKey = n ? `${view.runId}|${n.id}` : ''
+        React.useEffect(() => { setExpanded(false) }, [noteKey])
+        if (!n) return null
+        const act = async (action) => {
+          const mine = ++seq.current
+          try {
+            await rpc('observerAct', sessionId, { runId: view.runId, noteId: n.id, action })
+            if (alive.current && mine === seq.current) { setExpanded(false); await load() }
+          } catch (e) { if (alive.current && mine === seq.current) setProblem(e.message) }
+        }
+        const off = async () => {
+          const mine = ++seq.current
+          try {
+            await rpc('observerSet', sessionId, { enabled: false })
+            if (alive.current && mine === seq.current) await load()
+          } catch (e) { if (alive.current && mine === seq.current) setProblem(e.message) }
+        }
+        const where = (ev) => fmt(t('observer.source'), {
+          session: ev.session, record: ev.index + 1,
+          kind: ev.category === 'tool' ? fmt(t(ev.error ? 'observer.kind.toolError' : 'observer.kind.tool'), { tool: ev.tool || '?' })
+            : ev.category === 'instruction' ? t('observer.kind.instruction') : t('observer.kind.message'),
+        })
+        return h('section', { className: 'hmzf-panel hmzf-observer', 'data-hmz-flow': 'observer', 'data-hmz-note': n.id, 'data-hmz-run': view.runId, 'aria-label': t('observer.aria') },
+          h(Style),
+          h('div', { className: 'hmzf-obs-head' },
+            h('span', { className: 'hmzf-tag' }, n.tag === 'heads_up' ? t('observer.tag.heads') : t('observer.tag.know')),
+            h('span', { className: 'hmzf-obs-title', 'data-hmz-flow': 'observer-title' }, n.title)),
+          expanded ? h('div', { 'data-hmz-flow': 'observer-detail' },
+            h('p', { className: 'hmzf-obs-detail' }, n.detail),
+            n.partial ? h('div', { className: 'hmzf-desc' }, t('observer.partial')) : null,
+            h('div', { className: 'hmzf-desc' }, t('observer.evidence')),
+            n.evidence.map((ev, i) => h('div', { key: i, className: 'hmzf-obs-ev', 'data-hmz-flow': 'observer-evidence' },
+              h('div', { className: 'hmzf-desc' }, where(ev)),
+              h('pre', null, ev.excerpt)))) : null,
+          h('div', { className: 'hmzf-row' },
+            h('button', { type: 'button', className: 'hmzf-link', 'data-hmz-flow': 'observer-expand', onClick: () => setExpanded((x) => !x) }, expanded ? t('observer.collapse') : t('observer.expand')),
+            h('button', { type: 'button', className: 'hmzf-link', 'data-hmz-flow': 'observer-known', onClick: () => { void act('known') } }, t('observer.known')),
+            h('button', { type: 'button', className: 'hmzf-link', 'data-hmz-flow': 'observer-dismiss', onClick: () => { void act('dismissed') } }, t('observer.dismiss')),
+            h('span', { className: 'hmzf-grow' }),
+            h('button', { type: 'button', className: 'hmzf-link', 'data-hmz-flow': 'observer-off', onClick: () => { void off() } }, t('observer.off'))),
+          problem ? h('div', { className: 'hmzf-error' }, problem) : null)
+      }
+    }
+
     function makeView(t) {
       return function HmzFlowView(props) {
         if (!props.sessionId) return null
@@ -870,6 +1077,9 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: 'hmz-flow-options', order: 50, locale: NS,
         }, makeOptionsButton(t)))
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: 'hmz-flow-observer', order: 49, locale: NS,
+        }, makeObserverCard(t)))
         ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
           name: 'conversation.input.dock', id: 'hmz-flow-panel', order: 50, locale: NS,
         }, makePanel(t)))

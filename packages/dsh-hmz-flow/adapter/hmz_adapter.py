@@ -594,6 +594,114 @@ def op_web_trace(args: dict[str, Any]) -> dict[str, Any]:
     return {"sessions": _transcripts(workspace, epic)}
 
 
+def op_observe_evidence(args: dict[str, Any]) -> dict[str, Any]:
+    """What one run's workers visibly did and were asked, bounded, for the flow observer.
+
+    Taken: what a worker said (`message`); its tool calls with their output and
+    error flag (`tool`), where the output and the error are kept on their own
+    budget so a long input never hides them; and the latest instructions each
+    session received (`turn` prompts, as `instruction` items), so a later goal
+    is known. Never taken: reasoning (`llm`) or anything else. Each item names
+    where it came from (agent, session, record index) and says whether it was
+    cut. `fingerprint` covers everything visible, so unchanged evidence can be
+    recognised without asking a model. hmz's own logs can already be partial.
+    """
+    import hashlib
+
+    from hmz.sdk import Hmz
+
+    workspace = _workspace(args)
+    epic = _own_epic(workspace, args.get("epic"))
+    max_items = max(1, min(80, int(args.get("maxItems") or 40)))
+    max_chars = max(1000, min(60_000, int(args.get("maxChars") or 16_000)))
+    item_chars = max(200, min(4000, int(args.get("itemChars") or 1200)))
+    input_chars = max(80, min(item_chars, int(args.get("inputChars") or 400)))
+    prompt_chars = max(200, min(4000, int(args.get("promptChars") or 1500)))
+    prompts_per_session = max(0, min(5, int(args.get("promptsPerSession") or 2)))
+    epics = Hmz(workspace).epics
+    ran = epics.read(epic)
+    numbered: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for one in epics.sessions(epic):
+        counts[one.agent] = counts.get(one.agent, 0) + 1
+        numbered[f"{one.backend}:{one.ident}"] = f"{one.agent}/{counts[one.agent]}"
+
+    def cut(text: str, limit: int) -> tuple[str, bool]:
+        return (text, False) if len(text) <= limit else (text[:limit] + f" …[{len(text) - limit} more chars]", True)
+
+    def plain(value: Any) -> str:
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+
+    digest = hashlib.sha256()
+    visible: list[dict[str, Any]] = []
+    instructions: list[dict[str, Any]] = []
+    for session in _transcripts(workspace, epic):
+        key = str(session.get("key") or "")
+        if key not in numbered:
+            continue
+        label = numbered[key]
+        agent = label.rsplit("/", 1)[0]
+        prompts: list[dict[str, Any]] = []
+        for index, action in enumerate(session.get("actions") or []):
+            category = action.get("category")
+            said = action.get("args") or {}
+            base = {"ref": f"{key}#{index}", "agent": agent, "session": label, "index": index, "at": action.get("at") or ""}
+            if category == "message":
+                text = said.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                body, was_cut = cut(text, item_chars)
+                item = {**base, "category": "message", "tool": "", "error": False, "text": body, "cut": was_cut}
+                digest.update(f"{key}#{index}\0message\0{text}\n".encode())
+            elif category == "tool":
+                tool = str(said.get("tool") or "")
+                given, output, error = plain(said.get("input") or ""), plain(said.get("output") or ""), bool(said.get("error"))
+                # Input and output each have their own budget: a long input never hides the result.
+                given_cut, input_was_cut = cut(given, input_chars)
+                output_cut, output_was_cut = cut(output, max(200, item_chars - len(given_cut)))
+                body = f"input: {given_cut}\noutput: {output_cut or '(none recorded)'}" + ("\nresult: the tool reported an error" if error else "")
+                item = {**base, "category": "tool", "tool": tool, "error": error, "text": body, "cut": input_was_cut or output_was_cut}
+                digest.update(f"{key}#{index}\0tool\0{tool}\0{given}\0{output}\0{error}\n".encode())
+            elif category == "turn":
+                text = said.get("prompt")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                body, was_cut = cut(text, prompt_chars)
+                prompts.append({**base, "category": "instruction", "tool": "", "error": False, "text": body, "cut": was_cut})
+                digest.update(f"{key}#{index}\0turn\0{text}\n".encode())
+                continue
+            else:
+                continue
+            visible.append(item)
+        instructions.extend(prompts[-prompts_per_session:] if prompts_per_session else [])
+    visible.sort(key=lambda one: one["at"])
+    instructions.sort(key=lambda one: one["at"])
+    # At most 6 instructions overall (the latest), so many sessions never crowd out the work record.
+    instructions_omitted = max(0, len(instructions) - 6)
+    instructions = instructions[instructions_omitted:]
+    kept: list[dict[str, Any]] = []
+    used = sum(len(one["text"]) for one in instructions)
+    for one in reversed(visible):
+        if len(kept) >= max_items or used + len(one["text"]) > max_chars:
+            break
+        kept.append(one)
+        used += len(one["text"])
+    kept.reverse()
+    task, task_cut = _clip(ran.task if ran is not None else "", 3000)
+    return {
+        "epicName": epic.name,
+        "task": task,
+        "taskCut": task_cut,
+        "fingerprint": digest.hexdigest(),
+        "total": len(visible),
+        "instructions": instructions,
+        "items": kept,
+        "omitted": len(visible) - len(kept),
+        "instructionsOmitted": instructions_omitted,
+        "cut": any(one["cut"] for one in kept + instructions),
+    }
+
+
 # --------------------------------------------------------------------- actions
 
 
@@ -778,6 +886,7 @@ OPS = {
     "find_request": op_find_request,
     "epic_tree": op_epic_tree,
     "web_detail": op_web_detail,
+    "observe_evidence": op_observe_evidence,
     "web_trace": op_web_trace,
     "epic_session": op_epic_session,
     "start": op_start,

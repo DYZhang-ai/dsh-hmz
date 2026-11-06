@@ -196,3 +196,27 @@ test('the viewer route serves only the viewer and hmz\'s epic-view files, under 
     }
   } finally { await new Promise((r) => server.close(r)) }
 })
+
+test('observer RPCs: no backend call to read, foreign runs and malformed ids are refused', async () => {
+  const h = await harness()
+  try {
+    const before = h.calls.length
+    const empty = await h.rpc({ op: 'observerGet', sessionId: SID })
+    assert.equal(empty.body.result.enabled, true, 'on by default')
+    assert.deepEqual(empty.body.result.notes, [])
+    assert.equal(h.calls.length, before, 'reading made no adapter call')
+    const off = await h.rpc({ op: 'observerSet', sessionId: SID, enabled: false })
+    assert.equal(off.body.result.enabled, false)
+    assert.equal((await h.rpc({ op: 'observerGet', sessionId: SID })).body.result.enabled, false, 'kept before any run')
+    assert.equal((await h.rpc({ op: 'observerSet', sessionId: SID, enabled: 'yes' })).body.ok, false)
+    const foreign = '99999999-9999-4999-8999-999999999999'
+    assert.equal((await h.rpc({ op: 'observerGet', sessionId: SID, runId: foreign })).status, 403)
+    assert.equal((await h.rpc({ op: 'observerAct', sessionId: SID, runId: foreign, noteId: 'n-12345678', action: 'known' })).status, 403)
+    await h.call('hmz_flow_start', { task: 'task' })
+    const run = (await h.rpc({ op: 'runs', sessionId: SID })).body.result.runs[0]
+    assert.equal((await h.rpc({ op: 'observerAct', sessionId: SID, runId: run.runId, noteId: '../x', action: 'known' })).status, 403)
+    assert.equal((await h.rpc({ op: 'observerAct', sessionId: SID, runId: run.runId, noteId: 'n-12345678', action: 'erase' })).status, 403)
+    assert.equal((await h.rpc({ op: 'observerAct', sessionId: SID, runId: run.runId, noteId: 'n-12345678', action: 'known' })).body.ok, false, 'no such note')
+    assert.equal((await h.rpc({ op: 'observerGet', sessionId: 'session-nobody' })).status, 404)
+  } finally { await h.done() }
+})

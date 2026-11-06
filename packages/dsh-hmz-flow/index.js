@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { AdapterClient, AdapterError } from './lib/adapter-client.js'
 import { MaskError, RunView } from './lib/runview.js'
 import { VIEWER_PATH, viewerHandler } from './lib/viewer-route.js'
+import { FlowObserver, isNoteId, streamText } from './lib/observer.js'
 import { StateStore, isValidSessionId } from './lib/state.js'
 import { describeSelection, formatStatus, formatBinding } from './lib/present.js'
 import { FlowController, FlowError, ACTIVE } from './lib/controller.js'
@@ -135,6 +136,32 @@ export function apply(ctx, rawConfig = {}) {
 
   const runView = new RunView({ store, adapter, lastObserved: (id) => controller.lastObserved(id) })
 
+  // ------------------------------------------------------------ flow observer
+  // A side channel for the user (lib/observer.js): its own timer, its own model
+  // call with the secretary's provider/model and no tools; it never sends to the
+  // flow or the secretary, and the run monitor and RPCs never wait for it.
+  const observer = new FlowObserver({
+    store, adapter, logger,
+    routeOf: (sessionId) => {
+      const options = ctx.agents.get(sessionId)?.options
+      return options ? { provider: options.provider, model: options.model } : undefined
+    },
+    generate: (request) => {
+      const llm = ctx.get('llm')
+      if (!llm || typeof llm.stream !== 'function') return Promise.reject(Object.assign(new Error('no-model'), { code: 'no-model' }))
+      const call = () => streamText(llm, request)
+      return typeof ctx.agents.withoutInitiator === 'function' ? ctx.agents.withoutInitiator(call) : call()
+    },
+    options: config.observer ?? {},
+  })
+  ctx.effect(() => {
+    const timer = setInterval(() => { try { observer.tick() } catch (error) { logger.warn?.('hmz-flow observer: %s', error.message) } }, config.observerTickMs ?? 5000)
+    return async () => {
+      clearInterval(timer)
+      await observer.dispose()
+    }
+  }, 'hmz-flow: observer')
+
   // The native hmz viewer of the Flow page (static files only; data goes over postMessage).
   let staticDir = null
   const viewerStatic = () => (staticDir ??= adapter.request('ping').then((p) => {
@@ -224,6 +251,21 @@ export function apply(ctx, rawConfig = {}) {
     // The native viewer's two reads, for one run of this session only.
     viewDetail: async ({ sessionId, runId }) => runView.native(sessionId, runId, 'web_detail'),
     viewTrace: async ({ sessionId, runId }) => runView.native(sessionId, runId, 'web_trace'),
+    // The flow observer: read state, turn it on/off, mark a note known/dismissed.
+    observerGet: async ({ sessionId, runId }) => {
+      if (runId !== undefined) runView.resolve(sessionId, runId)
+      return observer.view(sessionId, runId)
+    },
+    observerSet: async ({ sessionId, enabled }) => {
+      liveAgent(sessionId)
+      return observer.setEnabled(sessionId, enabled)
+    },
+    observerAct: async ({ sessionId, runId, noteId, action }) => {
+      runView.resolve(sessionId, runId)
+      if (!isNoteId(noteId)) throw new MaskError('invalid note id')
+      if (action !== 'known' && action !== 'dismissed') throw new MaskError('invalid action')
+      return observer.act(sessionId, runId, noteId, action)
+    },
     // DSH's own model catalog for a backend that runs DSH (hmz's static list can lag it).
     dshModels: async () => {
       const llm = ctx.get('llm')
