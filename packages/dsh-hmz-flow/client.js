@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
       'panel.later': '角色与预算会在启动时冻结；leader 不能修改这些选项。',
       'panel.saved': '已保存',
       'observer.toggle': '流程提醒',
-      'observer.toggle.desc': 'flow 运行时，偶尔查看它的工作记录：你值得知道的知识或设计取舍，以及有记录为证的执行问题（反复出错、与最新要求不符），会在输入框上方提示一条。只给你看，不会发消息给 flow 或改变任务。每个任务最多查看 6 次，使用秘书当前的模型，费用另计，不计入 flow 预算。',
+      'observer.toggle.desc': 'flow 运行时，偶尔查看它的工作记录：你值得知道的知识或设计取舍，以及有记录为证的执行问题（反复出错、与最新要求不符），会在输入框上方提示一条。只给你看，不会发消息给 flow 或改变任务。按新的工作进展触发查看，失败会退避重试；使用秘书当前的模型，费用另计，不计入 flow 预算。',
       'observer.aria': '流程提醒',
       'observer.tag.know': '值得知道',
       'observer.tag.heads': '请注意',
@@ -50,8 +50,9 @@ window.__ModuleLoader__.load({
       'observer.kind.message': '消息',
       'observer.status.off': '提醒已关闭。',
       'observer.status.idle': '已开启；启动 flow 后才会查看。',
-      'observer.status.count': '（本任务已检查 {n}/{max} 次）',
-      'observer.status.limit': '本任务的检查次数已用完，不再查看。',
+      'observer.status.count': '（成功观察 {successes} 次，调用 {n} 次）',
+      'observer.status.retry': '将在 {at} 后重试。',
+      'observer.source.live': '{session} · 实时记录 {record} · {kind}',
       'observer.status.checking': '正在查看最新的工作记录…',
       'observer.status.notRunning': '这个任务没有在运行，不再查看。',
       'observer.status.noModel': '秘书当前没有可用的模型，暂时无法查看。',
@@ -148,7 +149,7 @@ window.__ModuleLoader__.load({
       'panel.later': 'Roles and budget are frozen at start; the leader cannot change these options.',
       'panel.saved': 'Saved',
       'observer.toggle': 'Flow reminders',
-      'observer.toggle.desc': 'While a flow runs, its work record is looked at now and then: knowledge or design tradeoffs worth knowing, and execution problems the record shows (repeated errors, not matching the latest request) appear as one short reminder above the composer. Only you see it; nothing is sent to the flow and the task is not changed. At most 6 looks per run, using the secretary\'s current model; the cost is separate from the flow budget.',
+      'observer.toggle.desc': 'While a flow runs, its work record is looked at now and then: knowledge or design tradeoffs worth knowing, and execution problems the record shows (repeated errors, not matching the latest request) appear as one short reminder above the composer. Only you see it; nothing is sent to the flow and the task is not changed. New work triggers a look; failed checks retry with backoff. Uses the secretary\'s current model; the cost is separate from the flow budget.',
       'observer.aria': 'Flow reminder',
       'observer.tag.know': 'Worth knowing',
       'observer.tag.heads': 'Heads up',
@@ -165,8 +166,9 @@ window.__ModuleLoader__.load({
       'observer.kind.message': 'message',
       'observer.status.off': 'Reminders are off.',
       'observer.status.idle': 'On; looks once a flow has started.',
-      'observer.status.count': '(checked {n} of {max} times for this run)',
-      'observer.status.limit': 'All checks for this run are used; no more looking.',
+      'observer.status.count': '({successes} successful checks, {n} calls)',
+      'observer.status.retry': 'Retries after {at}.',
+      'observer.source.live': '{session} · live record {record} · {kind}',
       'observer.status.checking': 'Looking at the latest work record…',
       'observer.status.notRunning': 'This run is not running; no more looking.',
       'observer.status.noModel': 'The secretary has no model available right now, so nothing can be looked at.',
@@ -460,12 +462,13 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
       const budget = source.budget && typeof source.budget === 'object' ? source.budget : {}
       const g = budget.graceful
       const grace = (k) => (g && typeof g === 'object' ? g[k] !== false : g !== false)
+      // hmz budget.duration is seconds; this input displays minutes.
       const seconds = typeof budget.duration === 'number' ? budget.duration : null
       return {
         agents,
         envs,
         cost: budget.cost === undefined || budget.cost === 'Infinity' ? '' : String(budget.cost),
-        minutes: seconds === null ? '' : String(Math.round(seconds / 60)),
+        minutes: seconds === null ? '' : String(seconds / 60),
         tokens: budget.output_tokens === undefined ? '' : String(budget.output_tokens),
         graceful: { cost: grace('cost'), duration: grace('duration'), output_tokens: grace('output_tokens') },
         params: JSON.stringify(source.params || {}, null, 1),
@@ -682,7 +685,7 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             h('div', { className: 'hmzf-sec' }, t('panel.budget')),
             h('div', { className: 'hmzf-grid' },
               input(t('panel.cost'), form.cost, (v) => setForm((f) => ({ ...f, cost: v })), 'cost', { type: 'number', min: '0', step: '0.01', placeholder: 'dollars' }),
-              input(t('panel.time'), form.minutes, (v) => setForm((f) => ({ ...f, minutes: v })), 'minutes', { type: 'number', min: '0', step: '1', placeholder: 'minutes' }),
+              input(t('panel.time'), form.minutes, (v) => setForm((f) => ({ ...f, minutes: v })), 'minutes', { type: 'number', min: '0', step: 'any', placeholder: 'minutes' }),
               input(t('panel.tokens'), form.tokens, (v) => setForm((f) => ({ ...f, tokens: v })), 'tokens', { type: 'number', min: '0', step: '1000', placeholder: 'output tokens' }),
             ),
             h('div', { className: 'hmzf-row' },
@@ -847,14 +850,14 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
     function observerStatusText(t, v) {
       if (v.enabled === false) return t('observer.status.off')
       if (!v.runId) return t('observer.status.idle')
-      const counted = fmt(t('observer.status.count'), { n: v.attempts, max: v.maxAttempts })
-      if (v.limited) return `${t('observer.status.limit')} ${counted}`
+      const counted = fmt(t('observer.status.count'), { n: v.attempts, successes: v.successes || 0 })
       if (v.checking) return `${t('observer.status.checking')} ${counted}`
       if (!v.current || v.phase !== 'running') return `${t('observer.status.notRunning')} ${counted}`
       const kind = v.status && v.status.kind
-      if (kind === 'no-model') return t('observer.status.noModel')
-      if (kind === 'timeout') return `${t('observer.status.timeout')} ${counted}`
-      if (kind === 'error') return `${t('observer.status.failed')} ${counted}`
+      const retry = v.retryAt ? fmt(t('observer.status.retry'), { at: new Date(v.retryAt).toLocaleTimeString() }) : ''
+      if (kind === 'no-model') return `${t('observer.status.noModel')} ${retry}`
+      if (kind === 'timeout') return `${t('observer.status.timeout')} ${retry} ${counted}`
+      if (kind === 'error') return `${t('observer.status.failed')} ${retry} ${counted}`
       return `${t('observer.status.watching')} ${counted}`
     }
     function observerStatusIsProblem(v) {
@@ -919,8 +922,8 @@ textarea.hmzf-input{height:auto;padding:4px 6px;font-family:var(--dsw-font-mono,
             if (alive.current && mine === seq.current) await load()
           } catch (e) { if (alive.current && mine === seq.current) setProblem(e.message) }
         }
-        const where = (ev) => fmt(t('observer.source'), {
-          session: ev.session, record: ev.index + 1,
+        const where = (ev) => fmt(t(ev.source === 'live' ? 'observer.source.live' : 'observer.source'), {
+          session: ev.session, record: ev.source === 'live' ? ev.index : ev.index + 1,
           kind: ev.category === 'tool' ? fmt(t(ev.error ? 'observer.kind.toolError' : 'observer.kind.tool'), { tool: ev.tool || '?' })
             : ev.category === 'instruction' ? t('observer.kind.instruction') : t('observer.kind.message'),
         })

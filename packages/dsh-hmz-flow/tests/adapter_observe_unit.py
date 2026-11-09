@@ -51,7 +51,7 @@ class Epics:
         return S(task="the task")
 
 
-sys.modules["hmz.sdk"] = types.SimpleNamespace(Hmz=lambda w: types.SimpleNamespace(epics=Epics()))
+sys.modules["hmz.sdk"] = types.SimpleNamespace(Hmz=lambda w=None: types.SimpleNamespace(epics=Epics()))
 m._TRANSCRIPT_TTL = 0.0
 args = {"workspace": str(root / "ws"), "epic": "E1", "maxItems": 10, "maxChars": 4000, "itemChars": 500}
 r = m.op_observe_evidence(args)
@@ -116,4 +116,87 @@ Epics.transcripts = lambda self, epic: [{"key": f"dsh:m{i}", "agent": f"A{i}", "
 mi = m.op_observe_evidence(args)
 check(len(mi["instructions"]) == 6 and mi["instructionsOmitted"] == 4 and mi["instructions"][-1]["text"] == "ask 4.1",
       f"instructions are capped to the newest 6 ({len(mi['instructions'])}, {mi['instructionsOmitted']})")
+# First Actor turn: no Epic `opened` row yet, but the host knows the session.
+# Exercise the real replay reader and verify exact-run discovery, not cwd scans.
+epic = under / "E1"
+expect = {"hostPid": 123, "hostStarted": "T0", "run": 7, "epic": str(epic)}
+closed = []
+trace_calls = []
+messages = [
+    {"type": "welcome", "pid": 123},
+    {"type": "opened", "seq": 1, "run": 7, "key": "Actor/1", "agent": "Actor", "cli": "dsh", "kept": str(epic / "sessions" / "dsh")},
+    {"type": "event", "seq": 2, "run": 7, "session": "Actor/1", "agent": "Actor", "cli": "dsh", "ident": "", "kind": "begins", "text": "Build a CLI", "at": 1},
+    {"type": "event", "seq": 3, "run": 7, "session": "Actor/1", "agent": "Actor", "cli": "dsh", "ident": "live-1", "kind": "tool", "text": "bash pytest", "at": 2},
+    {"type": "event", "seq": 4, "run": 8, "session": "Other/1", "agent": "Other", "cli": "dsh", "ident": "foreign", "kind": "text", "text": "OTHER RUN SECRET", "at": 2},
+    {"type": "event", "seq": 5, "run": 7, "session": "Actor/1", "agent": "Actor", "cli": "dsh", "ident": "live-1", "kind": "thinking", "text": "PRIVATE THOUGHT", "at": 3},
+    {"type": "run", "run": 7, "epic": str(epic), "state": "running"},
+    {"type": "live", "seq": 5, "elided": 0},
+]
+
+
+class Link:
+    def heard(self, callback):
+        for message in messages:
+            callback(message)
+
+    def close(self):
+        closed.append(True)
+
+
+class Daemon:
+    pid, started, slot = 123, "T0", ""
+
+    def link(self, **kwargs):
+        check(kwargs["replay"] is True, "observer attaches read-only with replay")
+        return Link()
+
+
+def trace(**kwargs):
+    trace_calls.append(kwargs)
+    check(kwargs["sessions"] == ["dsh:live-1"], "trace discovery uses exactly the live session ID")
+    check(kwargs["kept"] == [epic / "sessions"], "trace lookup uses the known run's logs")
+    check("output" not in kwargs, "live trace does not write an export")
+    return {"traceEvents": [
+        {"ph": "X", "cat": "turn", "ts": 1, "args": {"session": "dsh:live-1", "at": "1", "prompt": "Build a CLI"}},
+        {"ph": "X", "cat": "tool", "ts": 2, "args": {"session": "dsh:live-1", "at": "2", "tool": "bash", "input": "pytest", "output": "ImportError: missing module", "error": True}},
+        {"ph": "X", "cat": "llm", "ts": 3, "args": {"session": "dsh:live-1", "at": "3", "thinking": "PRIVATE THOUGHT"}},
+        {"ph": "X", "cat": "message", "ts": 4, "args": {"session": "dsh:foreign", "at": "4", "text": "OTHER RUN SECRET"}},
+    ]}
+
+
+Epics.sessions = lambda self, epic: []
+Epics.transcripts = lambda self, epic: []
+Epics.trace = lambda self, **kwargs: trace(**kwargs)
+sys.modules["hmz.sdk"].Daemons = lambda: S(here=lambda workspace: Daemon())
+live_args = {**args, "expect": expect}
+first = m.op_observe_evidence(live_args)
+check(len(first["items"]) == 1 and first["items"][0]["error"] and "ImportError" in first["items"][0]["text"], "first Actor turn has tool output before any Epic opened record")
+check(first["items"][0]["session"] == "Actor/1" and first["instructions"][0]["text"] == "Build a CLI", "live session provenance and first instruction are retained")
+check("OTHER RUN SECRET" not in str(first) and "PRIVATE THOUGHT" not in str(first), "foreign sessions and reasoning never enter observer evidence")
+check(bool(closed), "replay link is always closed")
+
+Epics.trace = lambda self, **kwargs: {"traceEvents": []}
+fallback = m.op_observe_evidence(live_args)
+check(fallback["items"][0]["source"] == "live" and fallback["items"][0]["index"] == 3 and fallback["cut"], "visible SDK events cover logs not available yet, with stable seq and partial marker")
+check(m.op_observe_evidence(live_args)["fingerprint"] == fallback["fingerprint"], "same replay has a stable fingerprint")
+messages[-2]["run"] = 8
+check(not m.op_observe_evidence(live_args)["items"], "a replaced run cannot lend its live evidence to this epic")
+messages[-2]["run"] = 7
+check(not m.op_observe_evidence({**args, "expect": {**expect, "hostStarted": "another-host"}})["items"], "a replacement host is not read")
+try:
+    m.op_observe_evidence({**args, "expect": {**expect, "epic": str(root / "outside")}})
+    check(False, "mismatched epic refused")
+except m.Refused:
+    check(True, "mismatched epic refused")
+
+messages.pop()  # no live marker: snapshots are not a consistent read yet
+m._SNAPSHOT_SECONDS = 0.001
+before_closed = len(closed)
+try:
+    m.op_observe_evidence(live_args)
+    check(False, "an incomplete live snapshot is not treated as empty success")
+except m.Unknown:
+    check(True, "an incomplete live snapshot is not treated as empty success")
+check(len(closed) == before_closed + 1, "an incomplete read also closes its replay link")
+
 sys.exit(fail)

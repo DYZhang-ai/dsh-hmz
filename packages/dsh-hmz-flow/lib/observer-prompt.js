@@ -131,7 +131,7 @@ export function parseReply(text, refs, priorTopics = []) {
       tag, topic, title, detail,
       evidence: ids.map((id) => {
         const item = known.get(id)
-        return { ref: item.ref, agent: item.agent, session: item.session, index: item.index, category: item.category, tool: item.tool || '', error: !!item.error, cut: !!item.cut, excerpt: clip(item.text, LIMITS.excerpt) }
+        return { ref: item.ref, agent: item.agent, session: item.session, index: item.index, category: item.category, source: item.source || 'transcript', tool: item.tool || '', error: !!item.error, cut: !!item.cut, excerpt: clip(item.text, LIMITS.excerpt) }
       }),
     },
   }

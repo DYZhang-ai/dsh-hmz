@@ -5,7 +5,7 @@ No model is called: only observerGet/Set/Act are answered in the browser, each
 DSH session with its own fixture state; everything else goes to the real Host.
 
 Checks:
-- the options panel's status line: on/count, timeout, no model, limit reached, off;
+- the options panel's status line: on/count, timeout, no model, progress continues after six calls, off;
 - session switch: a reply for session A that arrives after the page moved to
   session B never shows A's note in B's card, and A's late toggle failure never
   shows in B's panel;
@@ -59,7 +59,7 @@ class Fixture:
     def view(self):
         return {
             'enabled': self.enabled, 'runId': self.run, 'current': True, 'phase': 'running',
-            'attempts': self.attempts, 'maxAttempts': 6, 'limited': self.attempts >= 6,
+            'attempts': self.attempts, 'successes': 1, 'retryAt': '2026-11-09T12:00:00Z' if self.status and self.status['kind'] == 'timeout' else None,
             'status': self.status, 'checking': False,
             'notes': [{
                 'id': note_id(self.note), 'tag': 'know', 'topic': f't{self.note}', 'status': 'open', 'partial': False,
@@ -147,18 +147,18 @@ async def main():
 
         # ---- the status line (the panel re-reads every 5 s)
         text = await status.inner_text()
-        check('已开启' in text and '已检查 1/6 次' in text, f'status: on, with the count ({text!r})')
+        check('已开启' in text and '成功观察 1 次，调用 1 次' in text, f'status: on, with the count ({text!r})')
         a.status, a.attempts = {'kind': 'timeout', 'at': 'x'}, 2
         await page.wait_for_timeout(5600)
         text = await status.inner_text()
-        check('上一次查看超时' in text and '2/6' in text, f'status: timeout ({text!r})')
+        check('上一次查看超时' in text and '调用 2 次' in text and '重试' in text, f'status: timeout ({text!r})')
         a.status = {'kind': 'no-model', 'at': 'x'}
         await page.wait_for_timeout(5600)
         check('没有可用的模型' in await status.inner_text(), 'status: no model')
         a.status, a.attempts = {'kind': 'nothing', 'at': 'x'}, 6
         await page.wait_for_timeout(5600)
         text = await status.inner_text()
-        check('检查次数已用完' in text and '6/6' in text, f'status: limit reached ({text!r})')
+        check('已开启' in text and '调用 6 次' in text and '用完' not in text, f'status: progress continues after six calls ({text!r})')
         a.attempts, a.status = 1, None
         await switch.click()
         await page.wait_for_timeout(800)

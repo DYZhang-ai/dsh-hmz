@@ -10,11 +10,11 @@
  * - only the DSH session's current run, while it is `running`; one more pass
  *   after it ended if it was already being observed (never older runs);
  * - only when observing is on for the session (default on);
- * - at most one check per run every `intervalMs`; no model call when the
+ * - new visible progress triggers a check; no model call when the
  *   visible evidence is empty or unchanged, there is no model, or a note of
  *   that run is still open;
- * - at most `maxAttempts` model calls per run (failed ones count), recorded
- *   before the call so a restart does not repeat them;
+ * - no lifetime or hourly quota; failed checks back off and retry without
+ *   acknowledging their evidence; successful fingerprints survive restarts;
  * - at most one check at a time for the whole host process, across observer
  *   instances (a plugin reload makes a new one): a host-wide gate is held from
  *   the start of a check until its model call has really settled. Aborting a
@@ -26,10 +26,11 @@
  */
 import { randomUUID } from 'node:crypto'
 import { buildPrompt, parseReply } from './observer-prompt.js'
+import { appendDiagnostic, errorDetail, redact } from './observer-diagnostics.js'
 
 export const OBSERVER_DEFAULTS = Object.freeze({
-  intervalMs: 30_000,
-  maxAttempts: 6,
+  retryBaseMs: 30_000,
+  retryMaxMs: 15 * 60_000,
   timeoutMs: 45_000,
   maxTokens: 900,
   maxNotes: 10,
@@ -58,7 +59,7 @@ export function statusOf(error) {
 }
 
 class ObserverError extends Error {
-  constructor(code) { super(code); this.code = code }
+  constructor(code, message = code) { super(message); this.code = code }
 }
 
 export class FlowObserver {
@@ -116,6 +117,16 @@ export class FlowObserver {
         while (observer.order.length > this.opt.maxRuns) delete observer.runs[observer.order.shift()]
       }
       const run = observer.runs[runId]
+      if (run.progressVersion !== 1) {
+        // Old fingerprints were saved before generation, including failures.
+        // Re-check once; retained topics still prevent duplicate reminders.
+        run.progressVersion = 1
+        run.fingerprint = ''
+        run.successes = 0
+        run.failures = 0
+        run.nextRetryAt = 0
+        run.terminalDone = false
+      }
       const out = change(run)
       if (run.notes.length > this.opt.maxNotes) run.notes = run.notes.slice(-this.opt.maxNotes)
       return out
@@ -133,10 +144,11 @@ export class FlowObserver {
       current: !!id && id === binding?.requestId,
       phase: id ? (this.deps.store.run(sessionId, id)?.phase ?? null) : null,
       attempts: rs?.attempts ?? 0,
-      maxAttempts: this.opt.maxAttempts,
+      successes: rs?.successes ?? 0,
+      failures: rs?.failures ?? 0,
+      retryAt: rs?.nextRetryAt ? new Date(rs.nextRetryAt).toISOString() : null,
       status: rs?.status ?? null,
       checking: !!this.inflight && this.inflight.sessionId === sessionId && this.inflight.runId === id,
-      limited: (rs?.attempts ?? 0) >= this.opt.maxAttempts,
       notes: (rs?.notes ?? []).map((n) => ({ ...n })),
     }
   }
@@ -186,9 +198,8 @@ export class FlowObserver {
         if (!rs || rs.lastCheckAt === 0 || rs.terminalDone) continue
         terminal = true
       } else if (binding.phase !== 'running') continue
-      if ((rs?.attempts ?? 0) >= this.opt.maxAttempts) continue
       if (rs?.notes?.some((n) => n.status === 'open')) continue
-      if (!terminal && rs && this.now() - rs.lastCheckAt < this.opt.intervalMs) continue
+      if (rs?.nextRetryAt > this.now()) continue
       due.push({ sessionId, runId, binding, terminal, last: rs?.lastCheckAt ?? 0 })
     }
     if (!due.length) return null
@@ -203,15 +214,12 @@ export class FlowObserver {
     this.gate.owner = token
     this.gate.since = this.now()
     const abort = new AbortController()
-    const flight = { sessionId, runId, terminal, abort, done: null, generation: null }
+    const flight = { sessionId, runId, terminal, abort, done: null, generation: null, stage: 'state', route: null }
     this.inflight = flight
     const release = () => { if (this.gate.owner === token) this.gate.owner = null }
     flight.done = this.check(sessionId, runId, binding, terminal, abort, flight)
       .catch((error) => {
-        if (this.wanted(sessionId, runId, terminal) || terminal) {
-          try { this.updateRun(sessionId, runId, (run) => { run.status = { kind: statusOf(error), at: new Date(this.now()).toISOString() } }) } catch {}
-        }
-        if (statusOf(error) === 'error') this.deps.logger?.warn?.('hmz-flow observer: check failed')
+        this.failed(sessionId, runId, binding, flight, error)
       })
       .finally(() => {
         if (this.inflight === flight) this.inflight = null
@@ -223,26 +231,65 @@ export class FlowObserver {
     return flight.done
   }
 
+  failed(sessionId, runId, binding, flight, error) {
+    const kind = statusOf(error)
+    const at = new Date(this.now()).toISOString()
+    const detail = errorDetail(error)
+    let retryAt = null
+    let stateError
+    try {
+      this.updateRun(sessionId, runId, (run) => {
+        run.status = { kind, at }
+        if (kind === 'cancelled') return
+        run.failures += 1
+        run.nextRetryAt = this.now() + Math.min(this.opt.retryMaxMs, this.opt.retryBaseMs * 2 ** Math.min(run.failures - 1, 20))
+        retryAt = new Date(run.nextRetryAt).toISOString()
+        // Diagnostics stay local, outside the public observer RPC projection.
+        run.lastError = { at, stage: flight.stage, ...detail }
+      })
+    } catch (why) { stateError = errorDetail(why) }
+    if (kind === 'cancelled') return
+    const diagnostic = {
+      at, sessionId, runId, epic: binding.epic, hostPid: binding.hostPid, run: binding.run,
+      stage: flight.stage, provider: redact(flight.route?.provider, 200), model: redact(flight.route?.model, 200),
+      kind, retryAt, error: detail, ...(stateError ? { stateError } : {}),
+    }
+    const warn = (...args) => { try { this.deps.logger?.warn?.(...args) } catch {} }
+    warn('hmz-flow observer: %s', JSON.stringify(diagnostic))
+    try { appendDiagnostic(this.deps.store.dir, diagnostic) }
+    catch (why) { warn('hmz-flow observer: diagnostic write failed: %s', JSON.stringify(errorDetail(why))) }
+  }
+
   async check(sessionId, runId, binding, terminal, abort, flight = {}) {
     const at = () => new Date(this.now()).toISOString()
-    // The check happens now, whatever comes of it: the interval starts here.
-    this.updateRun(sessionId, runId, (run) => { run.lastCheckAt = this.now(); if (terminal) run.terminalDone = true })
+    this.updateRun(sessionId, runId, (run) => { run.lastCheckAt = this.now() })
+    flight.stage = 'route'
     const route = this.deps.routeOf(sessionId)
+    flight.route = route
     if (!route?.provider || !route?.model) {
-      this.updateRun(sessionId, runId, (run) => { run.status = { kind: 'no-model', at: at() } })
-      return
+      throw new ObserverError('no-model', 'The secretary has no provider/model configured')
     }
-    const evidence = await this.deps.adapter.request('observe_evidence', { workspace: binding.workspace, epic: binding.epic, ...this.opt.evidence })
+    flight.stage = 'evidence'
+    const expect = Object.fromEntries(['hostPid', 'hostStarted', 'run', 'epic'].map((key) => [key, binding[key]]))
+    const evidence = await this.deps.adapter.request('observe_evidence', { workspace: binding.workspace, epic: binding.epic, ...this.opt.evidence, expect })
     if (abort.signal.aborted || !this.wanted(sessionId, runId, terminal)) return
     const rs = this.runState(sessionId, runId)
     if ((!evidence.items?.length && !evidence.instructions?.length) || evidence.fingerprint === rs?.fingerprint) {
-      this.updateRun(sessionId, runId, (run) => { run.status = { kind: 'unchanged', at: at() } })
+      this.updateRun(sessionId, runId, (run) => {
+        run.status = { kind: 'unchanged', at: at() }
+        if (terminal) run.terminalDone = true
+      })
       return
     }
     const prior = (rs?.notes ?? []).map((n) => n.topic)
     const { system, user, refs } = buildPrompt(evidence, prior)
-    // Counted before the call, so a restart never replays it.
-    this.updateRun(sessionId, runId, (run) => { run.attempts += 1; run.checks += 1; run.fingerprint = evidence.fingerprint })
+    // Count attempts, but acknowledge progress only after a valid response.
+    // An interrupted call can be retried after restart, with bounded backoff.
+    this.updateRun(sessionId, runId, (run) => {
+      run.attempts += 1; run.checks += 1
+      run.nextRetryAt = this.now() + this.opt.retryBaseMs
+    })
+    flight.stage = 'model'
     const timer = setTimeout(() => abort.abort(new ObserverError('timeout')), this.opt.timeoutMs)
     let text
     try {
@@ -261,8 +308,18 @@ export class FlowObserver {
       clearTimeout(timer)
     }
     if (abort.signal.aborted || !this.wanted(sessionId, runId, terminal)) return
+    flight.stage = 'reply'
     const parsed = parseReply(text, refs, prior)
+    if (!parsed.note && !['silent', 'duplicate'].includes(parsed.reason)) {
+      throw new ObserverError('invalid-reply', `Observer reply rejected: ${parsed.reason}`)
+    }
+    flight.stage = 'save'
     this.updateRun(sessionId, runId, (run) => {
+      run.fingerprint = evidence.fingerprint
+      run.successes += 1
+      run.failures = 0
+      run.nextRetryAt = 0
+      if (terminal) run.terminalDone = true
       if (parsed.note && !run.notes.some((n) => n.topic === parsed.note.topic)) {
         // Partial: older records left out, the task cut, or any excerpt cut (hmz's own logs may be partial too).
         const partial = !!evidence.omitted || !!evidence.instructionsOmitted || !!evidence.taskCut || !!evidence.cut
@@ -299,9 +356,9 @@ export async function streamText(llm, { provider, model, system, prompt, maxToke
   let finished = null
   for await (const chunk of llm.stream({ provider, model, system, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens, signal })) {
     if (chunk.type === 'text-delta') text += chunk.text
-    else if (chunk.type === 'tool-call-delta') throw new ObserverError('error')
+    else if (chunk.type === 'tool-call-delta') throw new ObserverError('unexpected-tool', 'Observer returned a tool call although no tools were offered')
     else if (chunk.type === 'finish') finished = chunk.reason
   }
-  if (!finished || finished.kind !== 'stop') throw new ObserverError(finished?.kind === 'aborted' ? 'cancelled' : 'error')
+  if (!finished || finished.kind !== 'stop') throw new ObserverError(finished?.kind === 'aborted' && signal?.aborted ? 'cancelled' : 'finish', `Observer stream did not finish normally: ${redact(finished?.kind ?? 'missing finish', 100)}`)
   return text
 }
