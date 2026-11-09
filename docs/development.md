@@ -48,7 +48,7 @@
 
 ### 2.1 Node 单元测试与打包检查（无外部依赖）
 
-Node 行为测试使用 Node.js 内置的 `node --test` 运行器，共包含 8 个测试文件（覆盖状态存储与迁移、会话隔离与 `403` 越权拦截、控制器启动 Fence、写保护策略、秘书显式启动语义、取消信号处理、视图补丁与 CSP、以及流程提醒的间隔/次数上限/指纹/进程级闸门/多会话轮转）：
+Node 行为测试使用 Node.js 内置的 `node --test` 运行器，共包含 8 个测试文件（覆盖状态存储与迁移、会话隔离与 `403` 越权拦截、控制器启动 Fence、写保护策略、秘书显式启动语义、取消信号处理、视图补丁与 CSP、以及流程提醒的进展触发/失败重试/诊断落盘/指纹/进程级闸门/多会话轮转）：
 
 ```bash
 # 运行全部 Node 行为测试
@@ -76,6 +76,9 @@ ADAPTER="packages/dsh-hmz-flow/adapter/hmz_adapter.py"
 
 # 3. 流程提醒证据提取单元测试（验证消息、工具输入/输出独立预算、最新指令提取、截断标记与指纹）
 "$HMZ_PYTHON" -I packages/dsh-hmz-flow/tests/adapter_observe_unit.py "$ADAPTER"
+
+# 4. 使用真实 hmz 日志解析器验证首个 Actor turn（只替换 daemon 传输，不启动进程或模型）
+"$HMZ_PYTHON" -I packages/dsh-hmz-flow/tests/adapter_live_sdk.py "$ADAPTER"
 ```
 
 ### 2.3 真实 `hmz` SDK 适配层测试（按需，在隔离 `HUMANIZE_HOME` 中运行）
@@ -117,7 +120,7 @@ PREVIEW_DIR="$PWD/.preview-test"
 # 验证 ＋ 菜单与 / 菜单选择 flow、保留输入框草稿、打开 flow选项 面板且不自动启动
 (cd tests/e2e && "$PW_PYTHON" plus_menu.py "$PREVIEW_DIR")
 
-# 验证流程提醒卡片展示、展开来源依据、知道了/忽略/关闭提醒交互与纯文本防注入（RPC 由测试拦截应答）
+# 验证提醒卡片与操作、纯文本渲染，以及 budget.duration 秒与表单分钟的往返（RPC 由测试应答）
 (cd tests/e2e && "$PW_PYTHON" observer_ui.py "$PREVIEW_DIR")
 
 # 验证跨会话切换、同会话切换 run 时迟到/乱序 observer 回复的丢弃与状态行显示
@@ -160,4 +163,4 @@ DSH_PORT=44190  # 改为目标预览的实际端口
 3. **保护凭据与本地路径隐私**：
    - 切勿提交 `.preview/`、`.preview-*/`、`.credentials.yaml`、`private/dsh-url`、包含真实 token 的日志或带有个人开发机硬编码路径的文档与测试配置（相关模式已列入 [`.gitignore`](../.gitignore)）。
 4. **提交前自检**：
-   - 修改插件逻辑后，请至少在本地运行 `(cd packages/dsh-hmz-flow && npm test)` 以及 3 个 `adapter_*_unit.py` 测试，确保全部通过。
+   - 修改插件逻辑后，请至少在本地运行 `(cd packages/dsh-hmz-flow && npm test)` 以及 3 个 `adapter_*_unit.py` 测试和 `adapter_live_sdk.py`，确保全部通过。

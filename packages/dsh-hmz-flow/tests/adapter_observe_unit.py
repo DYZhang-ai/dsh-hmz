@@ -189,4 +189,14 @@ try:
 except m.Refused:
     check(True, "mismatched epic refused")
 
+messages.pop()  # no live marker: snapshots are not a consistent read yet
+m._SNAPSHOT_SECONDS = 0.001
+before_closed = len(closed)
+try:
+    m.op_observe_evidence(live_args)
+    check(False, "an incomplete live snapshot is not treated as empty success")
+except m.Unknown:
+    check(True, "an incomplete live snapshot is not treated as empty success")
+check(len(closed) == before_closed + 1, "an incomplete read also closes its replay link")
+
 sys.exit(fail)

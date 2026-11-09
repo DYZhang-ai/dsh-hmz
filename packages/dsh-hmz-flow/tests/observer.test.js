@@ -178,6 +178,28 @@ test('diagnostics redact credentials but retain transport failure context', () =
   assert.doesNotMatch(error, /abcdef|hello|pwd|xyz|abc def/)
 })
 
+test('material-read errors are diagnosed before any model call and retry after restart', async () => {
+  const h = harness({ evidence: () => { throw new Error('SDK snapshot incomplete') } })
+  h.store.setBinding('S', binding())
+  await h.run()
+  assert.equal(h.calls.generate.length, 0)
+  const log = JSON.parse(readFileSync(join(h.store.dir, 'observer-errors.jsonl'), 'utf8'))
+  assert.equal(log.stage, 'evidence')
+  assert.match(log.error.message, /snapshot incomplete/)
+  h.setEvidence({ task: 't', items: [item(0, 'progress')], fingerprint: 'recovered' })
+  let generated = 0
+  const restarted = new FlowObserver({
+    store: new StateStore(h.store.dir), gate: h.gate, now: h.now,
+    adapter: h.obs.deps.adapter, generate: () => { generated++; return reply(null) },
+    routeOf: h.obs.deps.routeOf,
+  })
+  assert.equal(restarted.tick(), null, 'the failure backoff survives restart')
+  h.advance(30_000)
+  await restarted.tick()
+  assert.equal(generated, 1)
+  assert.equal(restarted.view('S').failures, 0)
+})
+
 test('off before the first run, no model, or a stopping/historical run: no model call', async () => {
   const h = harness()
   h.obs.setEnabled('S', false)
