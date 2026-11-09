@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { StateStore } from '../lib/state.js'
 import { FlowObserver, streamText } from '../lib/observer.js'
 import { buildPrompt, parseReply } from '../lib/observer-prompt.js'
+import { redact } from '../lib/observer-diagnostics.js'
 
 const RUN = '11111111-1111-4111-8111-111111111111'
 const RUN2 = '22222222-2222-4222-8222-222222222222'
@@ -58,17 +59,17 @@ test('new visible work -> one model call, one note with checked provenance; noth
   assert.equal(h.calls.generate.length, 1)
 })
 
-test('unchanged or empty evidence and the 30 s interval make no model call; a handled topic is not raised again', async () => {
+test('unchanged or empty evidence makes no model call, however much time passes; handled topics are not repeated', async () => {
   const h = harness({ gen: () => reply(NOTE) })
   h.store.setBinding('S', binding())
   await h.run()
   const id = h.obs.view('S').notes[0].id
   h.obs.act('S', RUN, id, 'known')
   await h.run()
-  assert.equal(h.calls.evidence, 1, 'within 30 s: no check')
+  assert.equal(h.calls.generate.length, 1, 'polling unchanged progress does not call the model')
   h.advance(31_000)
   await h.run()
-  assert.equal(h.calls.evidence, 2)
+  assert.equal(h.calls.evidence, 3)
   assert.equal(h.calls.generate.length, 1, 'same fingerprint: no model call')
   h.advance(31_000)
   h.setEvidence({ task: 't', items: [], fingerprint: 'empty', omitted: 0 })
@@ -82,23 +83,99 @@ test('unchanged or empty evidence and the 30 s interval make no model call; a ha
   assert.equal(h.obs.view('S').notes.length, 1, 'the same topic again is dropped')
 })
 
-test('at most 6 model calls per run, failures included, and the count survives a restart', async () => {
-  let n = 0
-  const h = harness({ gen: () => { throw new Error('provider exploded with secret sk-123') } })
+test('six early failures cannot exhaust a run: same evidence retries after persisted backoff and succeeds', async () => {
+  let failures = 0
+  const h = harness({ gen: () => {
+    if (failures++ < 7) throw Object.assign(new Error('HTTP 503 gateway unavailable; api_key="private-key"; sk-123'), { status: 503, code: 'E_GATEWAY' })
+    return reply(null)
+  } })
   h.store.setBinding('S', binding())
-  for (let i = 0; i < 10; i++) {
-    h.setEvidence({ task: 't', items: [item(0, `v${i}`)], fingerprint: `f${i}`, omitted: 0 })
+  for (let i = 0; i < 7; i++) {
     await h.run()
-    h.advance(31_000)
-    n += 1
+    const state = h.obs.runState('S', RUN)
+    assert.equal(h.calls.generate.length, i + 1)
+    assert.equal(state.fingerprint, '', 'failed evidence remains unacknowledged')
+    assert.equal(state.successes, 0)
+    await h.run()
+    assert.equal(h.calls.generate.length, i + 1, 'backoff prevents immediate failure loops')
+    const disk = new StateStore(h.store.dir)
+    assert.equal(disk.entry('S').observer.runs[RUN].nextRetryAt, state.nextRetryAt)
+    h.advance(state.nextRetryAt - h.now())
   }
-  assert.equal(h.calls.generate.length, 6)
-  const view = h.obs.view('S')
-  assert.equal(view.attempts, 6)
-  assert.equal(view.status.kind, 'error')
-  assert.equal(JSON.stringify(view).includes('sk-123'), false, 'no raw provider error is kept')
-  const again = new FlowObserver({ store: h.store, adapter: { request: async () => { throw new Error('must not check') } }, generate: async () => '', routeOf: () => ({ provider: 'p', model: 'm' }) })
-  assert.equal(again.tick(), null, 'a restarted host does not replay')
+  await h.run()
+  assert.equal(h.calls.generate.length, 8)
+  assert.equal(h.obs.view('S').successes, 1)
+  assert.equal(h.obs.view('S').retryAt, null)
+  h.advance(48 * 3600_000)
+  await h.run()
+  assert.equal(h.calls.generate.length, 8, 'time alone never buys another observation')
+  const path = join(h.store.dir, 'observer-errors.jsonl')
+  const raw = readFileSync(path, 'utf8')
+  const diagnostics = raw.trim().split('\n').map(JSON.parse)
+  assert.equal(diagnostics.length, 7)
+  assert.equal(statSync(path).mode & 0o777, 0o600)
+  assert.equal(diagnostics[0].stage, 'model')
+  assert.equal(diagnostics[0].error.status, '503')
+  assert.match(diagnostics[0].error.message, /gateway unavailable/)
+  assert.equal(diagnostics[0].runId, RUN)
+  assert.equal(diagnostics[0].model, 'deepseek-flash')
+  assert.ok(diagnostics[0].retryAt)
+  assert.doesNotMatch(raw + readFileSync(h.store.file, 'utf8'), /private-key|sk-123/)
+  assert.equal('lastError' in h.obs.view('S'), false, 'diagnostics are not exposed in browser RPCs')
+})
+
+test('new progress can trigger more than six successes without waiting for a time window', async () => {
+  const h = harness({ gen: () => reply(null) })
+  h.store.setBinding('S', binding())
+  for (let i = 0; i < 12; i++) {
+    h.setEvidence({ task: 't', items: [item(i, `step ${i}`)], fingerprint: `step-${i}` })
+    await h.run()
+  }
+  assert.equal(h.calls.generate.length, 12)
+  assert.equal(h.obs.view('S').successes, 12)
+  assert.equal(h.now(), 1_000_000, 'progress, not time, triggers observations')
+})
+
+test('legacy exhausted runs retry once; successful new fingerprints survive a restart', async () => {
+  const h = harness({ gen: () => reply(null) })
+  h.store.setBinding('S', binding())
+  h.store.update('S', (entry) => {
+    entry.observer = { runs: { [RUN]: { attempts: 6, checks: 6, lastCheckAt: 1, fingerprint: 'f1', terminalDone: false, notes: [], status: { kind: 'error' } } }, order: [RUN] }
+  })
+  await h.run()
+  assert.equal(h.calls.generate.length, 1)
+  const restarted = new FlowObserver({
+    store: new StateStore(h.store.dir), gate: h.gate, now: h.now,
+    adapter: h.obs.deps.adapter, generate: () => assert.fail('successful evidence must not replay'),
+    routeOf: h.obs.deps.routeOf,
+  })
+  await restarted.tick()
+  assert.equal(restarted.view('S').attempts, 7)
+})
+
+test('invalid replies and failed final checks are diagnosed and retried, not silently acknowledged', async () => {
+  let n = 0
+  const h = harness({ gen: () => n++ === 1 ? 'not JSON' : reply(null) })
+  h.store.setBinding('S', binding())
+  await h.run()
+  h.store.setBinding('S', binding(RUN, 'ended'))
+  h.setEvidence({ task: 't', items: [item(1, 'done')], fingerprint: 'final' })
+  await h.run()
+  assert.equal(h.obs.runState('S', RUN).terminalDone, false)
+  assert.equal(h.obs.runState('S', RUN).fingerprint, 'f1')
+  const error = JSON.parse(readFileSync(join(h.store.dir, 'observer-errors.jsonl'), 'utf8'))
+  assert.equal(error.stage, 'reply')
+  assert.match(error.error.message, /unparsable/)
+  h.advance(30_000)
+  await h.run()
+  assert.equal(h.obs.runState('S', RUN).terminalDone, true)
+  assert.equal(h.obs.runState('S', RUN).fingerprint, 'final')
+})
+
+test('diagnostics redact credentials but retain transport failure context', () => {
+  const error = redact('HTTP 401 Bearer abcdef password=hello https://u:pwd@host/api?key=xyz api_key="abc def"')
+  assert.match(error, /HTTP 401/)
+  assert.doesNotMatch(error, /abcdef|hello|pwd|xyz|abc def/)
 })
 
 test('off before the first run, no model, or a stopping/historical run: no model call', async () => {

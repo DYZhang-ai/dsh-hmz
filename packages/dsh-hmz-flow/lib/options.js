@@ -21,6 +21,7 @@ export function isAgentSpec(value) {
 }
 
 /**
+ * duration is seconds, matching hmz SDK; the UI converts minutes at its boundary.
  * @param {unknown} budget
  * @returns {null | {cost?: number, duration?: number, output_tokens?: number, graceful: boolean | Record<string, boolean>}}
  */

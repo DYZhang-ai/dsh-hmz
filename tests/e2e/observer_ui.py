@@ -35,11 +35,11 @@ async def main():
     ws = preview / 'runs' / f'observer-{time.strftime("%H%M%S")}'
     ws.mkdir(parents=True)
     subprocess.run(['git', 'init', '-q'], cwd=ws, check=True)
-    state = {'enabled': True, 'status': 'open', 'acts': [], 'sets': []}
+    state = {'enabled': True, 'status': 'open', 'acts': [], 'sets': [], 'budget': 90, 'saved': []}
 
     def view():
         return {
-            'enabled': state['enabled'], 'runId': RUN, 'current': True, 'phase': 'running', 'attempts': 1, 'maxAttempts': 6,
+            'enabled': state['enabled'], 'runId': RUN, 'current': True, 'phase': 'running', 'attempts': 8, 'successes': 1,
             'status': None, 'checking': False,
             'notes': [{
                 'id': NOTE_ID, 'tag': 'heads_up', 'topic': 'cache', 'status': state['status'], 'partial': True,
@@ -61,6 +61,12 @@ async def main():
         async def route(r):
             body = json.loads(r.request.post_data or '{}')
             op = body.get('op')
+            if op == 'getOptions':
+                return await r.fulfill(json={'ok': True, 'result': {'agents': {}, 'budget': {'duration': state['budget'], 'graceful': True}}})
+            if op == 'setOptions':
+                state['saved'].append(body['options'])
+                state['budget'] = body['options']['budget']['duration']
+                return await r.fulfill(json={'ok': True, 'result': body['options']})
             if op == 'observerGet':
                 return await r.fulfill(json={'ok': True, 'result': view()})
             if op == 'observerAct':
@@ -89,8 +95,17 @@ async def main():
         switch = page.locator('[data-hmz-flow="observer-switch"]')
         check(await switch.count() == 1 and await switch.get_attribute('aria-checked') == 'true', 'the options panel has the reminders switch, on')
         panel_text = await page.locator('[data-hmz-flow="panel"]').inner_text()
-        check('不计入 flow 预算' in panel_text and '最多查看 6 次' in panel_text, 'the cost note and the limit are beside the switch')
-        check('已检查 1/6 次' in await page.locator('[data-hmz-flow="observer-status"]').inner_text(), 'the status line shows the count')
+        check('不计入 flow 预算' in panel_text and '按新的工作进展' in panel_text and '6 次' not in panel_text, 'the cost note and progress policy are beside the switch')
+        check('成功观察 1 次，调用 8 次' in await page.locator('[data-hmz-flow="observer-status"]').inner_text(), 'the status line shows the count')
+        minutes = page.locator('[data-hmz-field="minutes"]')
+        check(await minutes.input_value() == '1.5', '90 seconds displays as 1.5 minutes without rounding')
+        await minutes.fill('2.5')
+        await page.locator('[data-hmz-flow="panel"]').get_by_role('button', name='保存', exact=True).click()
+        await page.wait_for_timeout(800)
+        check(state['saved'][-1]['budget']['duration'] == 150, '2.5 minutes is sent as 150 seconds, not milliseconds')
+        await page.locator('[data-hmz-flow="options"]').click()
+        await page.wait_for_timeout(800)
+        check(await minutes.input_value() == '2.5', 'budget seconds round-trip after reopening the panel')
         await switch.click()
         await page.wait_for_timeout(800)
         check(state['sets'][-1:] == [{'op': 'observerSet', 'sessionId': tracker.last, 'enabled': False}], 'the switch sends observerSet for this session')

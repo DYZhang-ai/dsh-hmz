@@ -32,6 +32,8 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -169,14 +171,17 @@ def op_daemons(args: dict[str, Any]) -> dict[str, Any]:
 class _Reader:
     """One frontend link and everything it was told, in order."""
 
-    def __init__(self, daemon: Any, name: str) -> None:
+    def __init__(self, daemon: Any, name: str, *, replay: bool = False) -> None:
         self.daemon = daemon
         self.messages: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
         self.snaps: dict[str, Any] = {}
         self.welcome: dict[str, Any] = {}
         self.live = False
         self.gone = ""
-        self.link = daemon.link(name=name, kind="sdk", replay=False)
+        self.records: deque[dict[str, Any]] = deque(maxlen=2000)
+        self.elided = 0
+        self.replay = replay
+        self.link = daemon.link(name=name, kind="sdk", replay=replay)
         self.link.heard(self.messages.put)
 
     def pump(self, until: float, stop: Any = None) -> bool:
@@ -194,11 +199,19 @@ class _Reader:
                 self.welcome = message
             elif kind == "live":
                 self.live = True
+                self.elided += int(message.get("elided") or 0)
             elif kind == "gone":
                 self.gone = str(message.get("why") or "gone")
                 return False
             elif isinstance(kind, str) and "seq" not in message:
                 self.snaps[kind] = message
+            elif self.replay and kind in ("opened", "event"):
+                # Keep visible records only, never private reasoning. The host
+                # replay itself is bounded; this reader retains a smaller tail.
+                if kind == "opened" or message.get("kind") in ("begins", "text", "tool", "result", "failed", "took"):
+                    if len(self.records) == self.records.maxlen:
+                        self.elided += 1
+                    self.records.append(message)
             if stop is not None and stop(message):
                 return True
             if stop is None and self.live:
@@ -411,6 +424,7 @@ def _binding(daemon: Any, view: dict[str, Any]) -> dict[str, Any]:
 # read nothing else: no listing of other epics, no other workspace.
 
 _TRANSCRIPTS: dict[str, tuple[tuple[Any, ...], float, list[dict[str, Any]]]] = {}
+_LIVE_TRACES: dict[str, tuple[tuple[Any, ...], float, dict[str, Any]]] = {}
 _TRANSCRIPT_LOCKS: dict[str, threading.Lock] = {}
 _TRANSCRIPT_LOCK = threading.Lock()
 #: Most actions one detail page carries, and the longest text of one field.
@@ -594,6 +608,114 @@ def op_web_trace(args: dict[str, Any]) -> dict[str, Any]:
     return {"sessions": _transcripts(workspace, epic)}
 
 
+def _observer_live(workspace: str, epic: Path, expect: Any) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
+    """Discover first-turn sessions through a read-only, exact-run SDK replay.
+
+    Epic `opened` records arrive after a turn; the host's `opened` and `event`
+    records arrive while it runs. Never discover sessions by scanning a cwd.
+    """
+    if expect is None:  # Historical callers can still ask for the saved record.
+        return [], {}, False
+    from hmz.sdk import Daemons, Hmz
+
+    expect = _expect({"expect": expect})
+    if _own_epic(workspace, expect["epic"]) != epic:
+        raise Refused("observer epic does not match the bound run")
+    daemon = Daemons().here(workspace)  # read-only: never Daemons.host()
+    if not _same_host(daemon, expect):
+        return [], {}, False
+    reader = _Reader(daemon, f"{_PREFIX}-observer", replay=True)
+    try:
+        view = reader.snapshot()
+        if not view["complete"]:
+            raise Unknown(f"observer live snapshot incomplete: {view['incompleteWhy']}")
+        if view["run"] != expect["run"] or os.path.realpath(view["epic"]) != str(epic):
+            return [], {}, False
+        records = [one for one in reader.records if one.get("run") == expect["run"]]
+        partial = bool(reader.elided)
+    finally:
+        reader.close()
+
+    labels: dict[str, str] = {}
+    fallback: dict[str, dict[str, Any]] = {}
+    trace_keys: set[str] = set()
+    agents: dict[str, list[str]] = {}
+    kept = {epic / "sessions"}
+    opened = {one["key"]: one for one in records if one.get("type") == "opened" and one.get("key")}
+    # A backend can name a session only after its first `begins` event. Resolve
+    # all events against the latest identity in the replay, not just that row.
+    identities = {one["session"]: f"{one['cli']}:{one['ident']}" for one in records
+                  if one.get("type") == "event" and one.get("session") and one.get("cli") and one.get("ident")}
+    for record in records:
+        if record.get("type") != "event" or not record.get("session"):
+            continue
+        label = str(record["session"])
+        agent = str(record.get("agent") or "")
+        if not agent or not label.startswith(agent + "/"):
+            continue
+        key = identities.get(label, f"live:{expect['hostPid']}:{expect['hostStarted']}:{expect['run']}:{label}")
+        labels[key] = label
+        if key in identities.values():
+            trace_keys.add(key)
+            ids = agents.setdefault(agent, [])
+            if key not in ids:
+                ids.append(key)
+        where = Path(str(opened.get(label, {}).get("kept") or ""))
+        if where.is_absolute() and where.name == record.get("cli"):
+            kept.add(where.parent)
+        kind, text = record.get("kind"), str(record.get("text") or "")
+        if not text.strip():
+            continue
+        if kind in ("begins", "took"):
+            category, said = "turn", {"prompt": text}
+        elif kind == "tool":
+            tool, _, given = text.partition(" ")
+            category, said = "tool", {"tool": tool, "input": given, "output": "", "error": False}
+            partial = True  # the SDK event does not include the tool's output
+        elif kind == "failed":
+            category, said = "tool", {"tool": "agent", "input": "", "output": text, "error": True}
+        elif kind in ("text", "result"):
+            category, said = "message", {"text": text}
+        else:
+            continue
+        action = {"category": category, "args": said, "source": "live", "index": int(record["seq"]),
+                  "at": datetime.fromtimestamp(float(record.get("at") or 0), timezone.utc).isoformat()}
+        fallback.setdefault(key, {"key": key, "agent": agent, "actions": []})["actions"].append(action)
+
+    # Read logs for the exact IDs learned from this host/run. Unlike
+    # Epics.transcripts(), trace() does not require an Epic opened event.
+    # No output file and no global history discovery are requested.
+    if trace_keys:
+        # Cache parsing, not discovery: tool results can change a session log
+        # without emitting a new host event. Include each known log root in
+        # the signature, and expire even unchanged signatures after the TTL.
+        cache_key = f"live:{epic}:{expect['hostPid']}:{expect['hostStarted']}:{expect['run']}"
+        signature = (tuple(sorted(trace_keys)), tuple((str(path), _signature(path)) for path in sorted(kept)))
+        with _TRANSCRIPT_LOCK:
+            lock = _TRANSCRIPT_LOCKS.setdefault(cache_key, threading.Lock())
+        with lock:
+            cached = _LIVE_TRACES.get(cache_key)
+            if cached is not None and cached[0] == signature and time.monotonic() - cached[1] < _TRANSCRIPT_TTL:
+                document = cached[2]
+            else:
+                document = Hmz().epics.trace(sessions=sorted(trace_keys), agents=agents, kept=sorted(kept))
+                _LIVE_TRACES[cache_key] = (signature, time.monotonic(), document)
+                if len(_LIVE_TRACES) > 16:
+                    _LIVE_TRACES.pop(next(iter(_LIVE_TRACES)))
+        traced: dict[str, list[dict[str, Any]]] = {}
+        for event in document.get("traceEvents") or []:
+            said = dict(event.get("args") or {})
+            key = str(said.pop("session", ""))
+            if key not in trace_keys or event.get("ph") != "X" or event.get("cat") in ("session", "process"):
+                continue
+            traced.setdefault(key, []).append({"category": event.get("cat"), "args": said,
+                                               "at": str(said.pop("at", "") or ""), "start": event.get("ts", 0)})
+        for key, actions in traced.items():
+            actions.sort(key=lambda one: one["start"])
+            fallback[key] = {"key": key, "actions": actions}
+    return list(fallback.values()), labels, partial
+
+
 def op_observe_evidence(args: dict[str, Any]) -> dict[str, Any]:
     """What one run's workers visibly did and were asked, bounded, for the flow observer.
 
@@ -635,7 +757,11 @@ def op_observe_evidence(args: dict[str, Any]) -> dict[str, Any]:
     digest = hashlib.sha256()
     visible: list[dict[str, Any]] = []
     instructions: list[dict[str, Any]] = []
-    for session in _transcripts(workspace, epic):
+    sources = {one["key"]: one for one in _transcripts(workspace, epic) if one.get("key") in numbered}
+    live, live_labels, live_partial = _observer_live(workspace, epic, args.get("expect"))
+    numbered.update(live_labels)
+    sources.update({one["key"]: one for one in live})
+    for session in sources.values():
         key = str(session.get("key") or "")
         if key not in numbered:
             continue
@@ -645,7 +771,8 @@ def op_observe_evidence(args: dict[str, Any]) -> dict[str, Any]:
         for index, action in enumerate(session.get("actions") or []):
             category = action.get("category")
             said = action.get("args") or {}
-            base = {"ref": f"{key}#{index}", "agent": agent, "session": label, "index": index, "at": action.get("at") or ""}
+            index = action.get("index", index)
+            base = {"ref": f"{key}#{index}", "agent": agent, "session": label, "index": index, "at": action.get("at") or "", "source": action.get("source", "transcript")}
             if category == "message":
                 text = said.get("text")
                 if not isinstance(text, str) or not text.strip():
@@ -698,7 +825,7 @@ def op_observe_evidence(args: dict[str, Any]) -> dict[str, Any]:
         "items": kept,
         "omitted": len(visible) - len(kept),
         "instructionsOmitted": instructions_omitted,
-        "cut": any(one["cut"] for one in kept + instructions),
+        "cut": live_partial or any(one["cut"] for one in kept + instructions),
     }
 
 
