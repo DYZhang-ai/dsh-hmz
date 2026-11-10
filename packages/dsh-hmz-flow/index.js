@@ -65,7 +65,7 @@ export function apply(ctx, rawConfig = {}) {
   })
   ctx.effect(() => () => adapter.close(), 'hmz-flow: adapter')
 
-  const agents = flowAgents(ctx.agents, ctx.get?.('subagents'))
+  const agents = flowAgents(ctx.agents, () => ctx.get?.('subagents'))
 
   // ------------------------------------------------------------- helpers
   function liveAgent(sessionId) {

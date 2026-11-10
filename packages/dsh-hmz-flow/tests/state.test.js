@@ -40,6 +40,29 @@ test('invalid patches are refused and nothing is written', () => {
   assert.deepEqual(validateSelectionPatch({ flow: 'rlar:rlar' }), { flow: 'rlar:rlar' })
 })
 
+test('canonical flow names and their separate options survive a restart unchanged', () => {
+  const d = dir()
+  const names = ['@local/humanize1:gen-idea', '@user/humanize1:gen-plan', '@user/humanize1:rlcr', '@team/alice/review:loop', 'alice/review']
+  const store = new StateStore(d)
+  for (const [index, flow] of names.entries()) {
+    store.setSelection('session-'+index, { flow })
+    store.setOptions('session-'+index, flow, { budget: { duration: 60+index } })
+  }
+  const restored = new StateStore(d)
+  for (const [index, flow] of names.entries()) {
+    assert.equal(restored.selection('session-'+index).flow, flow)
+    assert.equal(restored.options('session-'+index, flow).budget.duration, 60+index)
+  }
+})
+
+test('flow references reject paths, URLs, empty segments and malformed namespaces', () => {
+  const store = new StateStore(dir())
+  for (const flow of ['/tmp/x', './x', '../x', '@user/../x', '@local/', '@/x', 'a//b', 'git+https://example/x', 'https://example/x', 'a\\b']) {
+    assert.throws(() => store.setSelection('s', { flow }), /flow name/, flow)
+    assert.throws(() => store.setOptions('s', flow, {}), /flow name/, flow)
+  }
+})
+
 test('an unknown state format is not overwritten', () => {
   const d = dir()
   writeFileSync(join(d, 'state.json'), JSON.stringify({ version: 99, x: 1 }))

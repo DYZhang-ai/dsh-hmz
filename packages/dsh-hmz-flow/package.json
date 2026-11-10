@@ -1,6 +1,6 @@
 {
   "name": "@dsh-hmz/flow",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Run hmz flows from DSH: flow menu and options, leader tools to start, steer, answer and stop a run, write protection while it runs, and a per-session Flow page drawn from the hmz SDK.",
   "type": "module",

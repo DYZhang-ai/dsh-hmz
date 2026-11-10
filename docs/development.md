@@ -9,7 +9,7 @@
 ```text
 .
 ├── packages/
-│   └── dsh-hmz-flow/                # @dsh-hmz/flow DSH 外部插件包 (private: true, v0.1.1)
+│   └── dsh-hmz-flow/                # @dsh-hmz/flow DSH 外部插件包 (private: true, v0.1.2)
 │       ├── index.js                 # Host 端入口：RPC 路由、秘书工具、写保护守卫、观察器挂载
 │       ├── client.js                # Client 端入口：＋ 与 / 菜单、flow选项面板、提醒卡片、Flow 页
 │       ├── cordis.patch.yml         # Bundle 默认注入补丁（具体路径配置由 profile 覆盖）
@@ -61,13 +61,16 @@ Node 行为测试使用 Node.js 内置的 `node --test` 运行器，共包含 9 
 
 ### 2.2 Python 适配层单元测试（需 `hmz` Python 环境，无守护进程/无模型）
 
-[`packages/dsh-hmz-flow/tests/`](../packages/dsh-hmz-flow/tests/) 下的 3 个 Python 单元测试通过故障注入与轻量级 SDK 替身验证 `hmz_adapter.py` 的核心逻辑，不启动 `hmz` daemon，也不发起网络请求。
+[`packages/dsh-hmz-flow/tests/`](../packages/dsh-hmz-flow/tests/) 下的 Python 单元测试通过故障注入与轻量级 SDK 替身验证 `hmz_adapter.py` 的核心逻辑，不启动 `hmz` daemon，也不发起网络请求。
 
 请将 `HMZ_PYTHON` 指向你本地 `hmz` 独立安装目录下的 `venv/bin/python`（若路径含空格请保留引号）：
 
 ```bash
 HMZ_PYTHON="/abs/path/to/hmz-root/venv/bin/python"
 ADAPTER="packages/dsh-hmz-flow/adapter/hmz_adapter.py"
+
+# 命名空间原样传递；未提供的名称和文件路径在导入前被拒绝
+"$HMZ_PYTHON" -I packages/dsh-hmz-flow/tests/adapter_flow_unit.py "$ADAPTER"
 
 # 1. 启动绑定故障注入测试（验证超时、连接断开或快照被其他 run 抢占时不产生脏绑定）
 "$HMZ_PYTHON" -I packages/dsh-hmz-flow/tests/adapter_start_unit.py "$ADAPTER"
