@@ -9,13 +9,14 @@
 ```text
 .
 ├── packages/
-│   └── dsh-hmz-flow/                # @dsh-hmz/flow DSH 外部插件包 (private: true, v0.1.0)
+│   └── dsh-hmz-flow/                # @dsh-hmz/flow DSH 外部插件包 (private: true, v0.1.1)
 │       ├── index.js                 # Host 端入口：RPC 路由、秘书工具、写保护守卫、观察器挂载
 │       ├── client.js                # Client 端入口：＋ 与 / 菜单、flow选项面板、提醒卡片、Flow 页
 │       ├── cordis.patch.yml         # Bundle 默认注入补丁（具体路径配置由 profile 覆盖）
 │       ├── adapter/
 │       │   └── hmz_adapter.py       # 外置 Python 适配层：通过 stdio JSON-lines 调用 hmz SDK
 │       ├── lib/
+│       │   ├── agents.js            # 旧版 registry 与新版 subagents.rootOf 的代理归属适配
 │       │   ├── adapter-client.js    # Node 侧 stdio 子进程管理与结果分类（refused/not-sent/unknown）
 │       │   ├── controller.js        # 会话级串行控制、启动前静默检查、精确身份校验与状态轮询
 │       │   ├── history.js           # “附带前文”可见消息快照提取与截断
@@ -48,7 +49,7 @@
 
 ### 2.1 Node 单元测试与打包检查（无外部依赖）
 
-Node 行为测试使用 Node.js 内置的 `node --test` 运行器，共包含 8 个测试文件（覆盖状态存储与迁移、会话隔离与 `403` 越权拦截、控制器启动 Fence、写保护策略、秘书显式启动语义、取消信号处理、视图补丁与 CSP、以及流程提醒的进展触发/失败重试/诊断落盘/指纹/进程级闸门/多会话轮转）：
+Node 行为测试使用 Node.js 内置的 `node --test` 运行器，共包含 9 个测试文件（覆盖状态存储与迁移、会话隔离与 `403` 越权拦截、控制器启动 Fence、写保护策略、秘书显式启动语义、取消信号处理、视图补丁与 CSP、以及流程提醒的进展触发/失败重试/诊断落盘/指纹/进程级闸门/多会话轮转）：
 
 ```bash
 # 运行全部 Node 行为测试
