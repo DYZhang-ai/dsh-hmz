@@ -22,6 +22,7 @@ import { StateStore, isValidSessionId } from './lib/state.js'
 import { describeSelection, formatStatus, formatBinding } from './lib/present.js'
 import { FlowController, FlowError, ACTIVE } from './lib/controller.js'
 import { InFlight, protectedCallReason, protectedRootOf } from './lib/policy.js'
+import { flowAgents } from './lib/agents.js'
 import { validateOptions } from './lib/options.js'
 import { composeTask, historySnapshot } from './lib/history.js'
 import { fallbackUserMessage, loadUserMessageFactory, noticeMessage } from './lib/message.js'
@@ -64,6 +65,8 @@ export function apply(ctx, rawConfig = {}) {
   })
   ctx.effect(() => () => adapter.close(), 'hmz-flow: adapter')
 
+  const agents = flowAgents(ctx.agents, () => ctx.get?.('subagents'))
+
   // ------------------------------------------------------------- helpers
   function liveAgent(sessionId) {
     const agent = ctx.agents.get(sessionId)
@@ -73,7 +76,7 @@ export function apply(ctx, rawConfig = {}) {
   function workspaceOfSession(sessionId) {
     return realpathSync(ctx.workingDirectory.get(liveAgent(sessionId).session))
   }
-  const isRoot = (agent) => ctx.agents.roots().some((one) => one.id === agent.id)
+  const isRoot = (agent) => agents.roots().some((one) => one.id === agent.id)
 
   // ------------------------------------------- protection + notifications
   const inflight = new InFlight()
@@ -128,7 +131,7 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
   const controller = new FlowController({
-    adapter, store, agents: ctx.agents, inflight,
+    adapter, store, agents, inflight,
     jobs: () => ctx.get('jobs'),
     workspaceOf: workspaceOfSession,
     notify, onProtect, logger,
@@ -175,7 +178,7 @@ export function apply(ctx, rawConfig = {}) {
     // unknown (or a start is being fenced). Selecting a flow alone protects nothing:
     // the secretary decides what goes to the flow.
     const ids = controller.protectedIds()
-    if (ids.size && protectedRootOf(ctx.agents, exec.agent, ids)) return protectedCallReason(exec)
+    if (ids.size && protectedRootOf(agents, exec.agent, ids)) return protectedCallReason(exec)
     return undefined
   }), 'hmz-flow: write guard')
 
@@ -498,8 +501,8 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   function rootIdOf(agent) {
-    for (const root of ctx.agents.roots()) {
-      if (root.id === agent.id || ctx.agents.isOwnedBy(agent.id, root)) return root.id
+    for (const root of agents.roots()) {
+      if (root.id === agent.id || agents.isOwnedBy(agent.id, root)) return root.id
     }
     return agent.id
   }
@@ -518,7 +521,7 @@ export function apply(ctx, rawConfig = {}) {
     }), 'hmz-flow: leader context')
     contexts.set(agent.id, dispose)
   }
-  for (const agent of ctx.agents.roots()) {
+  for (const agent of agents.roots()) {
     attachContext(agent)
     syncPresentation(agent.id)
   }

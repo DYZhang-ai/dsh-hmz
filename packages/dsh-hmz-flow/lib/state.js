@@ -35,7 +35,9 @@ export function defaultSelection() {
   return { flow: null, includeHistory: true, updatedAt: null }
 }
 
-const FLOW_NAME = /^[A-Za-z0-9_.:-]{1,120}$/
+// Keep hmz's canonical namespace, owner path and inner-flow suffix intact.
+// The adapter separately requires an exact match in hmz's offered list.
+const FLOW_NAME = /^(?=.{1,120}$)(?:@[A-Za-z0-9][A-Za-z0-9_.-]*\/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*(?::[A-Za-z0-9_.-]+)?$/
 const RUN_ID = /^[A-Za-z0-9-]{8,80}$/
 
 /** @param {unknown} id */

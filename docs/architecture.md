@@ -9,7 +9,7 @@
 `@dsh-hmz/flow`（位于 [`packages/dsh-hmz-flow/`](../packages/dsh-hmz-flow/)）是一个外置 DSH 插件与外置 Python 适配层组合。**已安装的 DSH 与 `hmz` 源码均未作任何修改**，双方仅通过公开接口衔接：
 
 - **DSH 公开插件接口**：
-  - Host 端（[`index.js`](../packages/dsh-hmz-flow/index.js)）：`tools`（`register`、`guard`、`presentAs`）、`agents`（`roots`、`isOwnedBy`、`followup`、`withoutInitiator`）、`connection.fetch`、`webServer`、`workingDirectory`、`userQuestions`、`llm`（`listModels`、`stream`）、`systemPrompt.context`。
+  - Host 端（[`index.js`](../packages/dsh-hmz-flow/index.js)）：`tools`（`register`、`guard`、`presentAs`）、`agents`（`get`、`list`、`withoutInitiator`）、Agent 的 `followup`、`connection.fetch`、`webServer`、`workingDirectory`、`userQuestions`、`llm`（`listModels`、`stream`）、`systemPrompt.context`。代理归属由 [`lib/agents.js`](../packages/dsh-hmz-flow/lib/agents.js) 适配：旧版使用 `agents.roots/isOwnedBy`，新版通过 getter 按次读取当前 `subagents.rootOf`，以运行时归属识别根和所有层级的子代理，不按 `parentSession` 猜测普通会话分支的归属。服务暂不可用时查询抛错，恢复后同一包装器使用新服务，无需重载插件。
   - Client 端（[`client.js`](../packages/dsh-hmz-flow/client.js)）：`slots`（`conversation.input.left`、`conversation.input.dock`、`conversation.view`）、`locale`、`inputTriggers`（`/` 菜单源）、`commandUi`（`＋` 菜单 `/flow` 指令与 `dismiss`）、`sessions`。
 - **`hmz` 公开 SDK 与 Web 模块**：
   - Python 适配层（[`adapter/hmz_adapter.py`](../packages/dsh-hmz-flow/adapter/hmz_adapter.py)）：通过 `hmz.sdk.Hmz`、`hmz.sdk.Daemons`、daemon `Link`、`hmz.web.flows.declared` 与 `hmz.web.runs`（`detail`、`calls`）读写状态与执行控制。
